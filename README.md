@@ -1,34 +1,38 @@
 # PriceOracle — GenLayer On-Chain Price Feed
 
-Live crypto and forex prices fetched from public APIs, verified by 5 independent AI validators on GenLayer, and stored on-chain.
+Live crypto and forex prices fetched from public APIs, verified by 5 independent AI validators on GenLayer, and stored on-chain for any dApp to read.
+
+## Live App
+https://price-oracle-frontend-delta.vercel.app
 
 ## Contract
 - **Address:** `0x3bfa3494C7AEB35489436A5325DD0D8F51BE5E0B` (Bradbury Testnet)
 - **File:** `contracts/price_oracle.py`
 
 ## Live Pairs
-**Crypto (Binance API)**
-- BTC/USDT, ETH/USDT, SOL/USDT, BNB/USDT
+**Crypto — Binance API**
+- BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT
 
-**Forex — African (ExchangeRate API)**
+**Forex — ExchangeRate API (African)**
 - USD/NGN, USD/GHS, USD/KES
 
-**Forex — Major (Frankfurter/ECB)**
+**Forex — Frankfurter/ECB (Major)**
 - USD/EUR, USD/GBP
 
-## Methods
-- `update_crypto_price(symbol)` — fetch and store crypto price from Binance
+## How Any dApp Can Use It
+```python
+oracle = gl.contract.get_at(Address("0x3bfa3494C7AEB35489436A5325DD0D8F51BE5E0B"))
+price = json.loads(oracle.get_price("BTCUSDT"))["price"]
+```
+
+## Contract Methods
+- `update_crypto_price(symbol)` — fetch and store from Binance
 - `update_forex_rate(base, quote)` — fetch and store forex rate
 - `get_price(symbol)` — read latest price with timestamp
-- `get_all_prices()` — read all tracked pairs
-- `get_supported_symbols()` — list all symbols
+- `get_all_prices()` — read all 9 tracked pairs
 - `get_stats()` — total symbols and updates
-
-## How It Works
-Each price update is verified by 5 independent GenLayer validators using `gl.eq_principle.prompt_non_comparative`. Validators independently fetch from the same public API and verify the output format before writing to chain.
 
 ## Stack
 - GenLayer Bradbury Testnet (Python Intelligent Contract)
-- Binance Public API (crypto)
-- Frankfurter/ECB API (major forex)
-- ExchangeRate API (African forex — NGN, GHS, KES)
+- Binance Public API · Frankfurter/ECB · ExchangeRate API
+- Next.js 16 · Vercel
