@@ -1,36 +1,34 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# PriceOracle — GenLayer On-Chain Price Feed
 
-## Getting Started
+Live crypto and forex prices fetched from public APIs, verified by 5 independent AI validators on GenLayer, and stored on-chain.
 
-First, run the development server:
+## Contract
+- **Address:** `0x3bfa3494C7AEB35489436A5325DD0D8F51BE5E0B` (Bradbury Testnet)
+- **File:** `contracts/price_oracle.py`
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+## Live Pairs
+**Crypto (Binance API)**
+- BTC/USDT, ETH/USDT, SOL/USDT, BNB/USDT
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+**Forex — African (ExchangeRate API)**
+- USD/NGN, USD/GHS, USD/KES
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+**Forex — Major (Frankfurter/ECB)**
+- USD/EUR, USD/GBP
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Methods
+- `update_crypto_price(symbol)` — fetch and store crypto price from Binance
+- `update_forex_rate(base, quote)` — fetch and store forex rate
+- `get_price(symbol)` — read latest price with timestamp
+- `get_all_prices()` — read all tracked pairs
+- `get_supported_symbols()` — list all symbols
+- `get_stats()` — total symbols and updates
 
-## Learn More
+## How It Works
+Each price update is verified by 5 independent GenLayer validators using `gl.eq_principle.prompt_non_comparative`. Validators independently fetch from the same public API and verify the output format before writing to chain.
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Stack
+- GenLayer Bradbury Testnet (Python Intelligent Contract)
+- Binance Public API (crypto)
+- Frankfurter/ECB API (major forex)
+- ExchangeRate API (African forex — NGN, GHS, KES)
