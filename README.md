@@ -3,7 +3,7 @@
 Live crypto and forex prices fetched from public APIs, verified by 5 independent AI validators on GenLayer, and stored on-chain for any dApp to read.
 
 ## Live App
-https://price-oracle-frontend-delta.vercel.app
+https://price-oracle-delta.vercel.app
 
 ## Contract
 - **Address:** `0x3bfa3494C7AEB35489436A5325DD0D8F51BE5E0B` (Bradbury Testnet)
