@@ -59,7 +59,7 @@ function PriceCard({ item, index }: { item: any; index: number }) {
   const color = meta?.color || 'var(--blue)'
 
   return (
-    <div className={`card reveal reveal-d${(index % 4) + 1}`} style={{ position: 'relative', overflow: 'hidden' }}>
+    <div className="card" style={{ position: 'relative', overflow: 'hidden' }}>
       {/* Color accent top bar */}
       <div style={{ height: 3, background: isCrypto ? `linear-gradient(90deg, ${color}, ${color}88)` : 'var(--grad)' }} />
 
