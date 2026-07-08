@@ -4,7 +4,7 @@ from genlayer import *
 import json
 
 # GenLayer Price Oracle
-# Fetches and stores on-chain prices verified by 5 independent AI validators
+# Fetches and stores on-chain prices after GenLayer validator consensus checks
 #
 # Crypto: Binance API (api.binance.com/api/v3/ticker/price) — no auth, public
 # Major forex: Frankfurter (api.frankfurter.dev/v2/rates) — no auth, ECB data
@@ -12,7 +12,8 @@ import json
 #
 # Consensus: gl.eq_principle.prompt_non_comparative with format-only criteria
 # (prices change between validator calls, so strict_eq would fail)
-# Validators check: is the output valid JSON with a positive numeric price?
+# Validators check JSON shape, expected symbol/source fields, and positive numeric values.
+# They do not independently prove the market price is correct.
 #
 # gl.message_raw["datetime"] for timestamps
 # Storage writes OUTSIDE nondet blocks

@@ -11,7 +11,17 @@ export function Mochi({ size = 160 }: { size?: number }) {
     ctx.scale(2, 2)
     let frame = 0, id: number
     const cx = size / 2, cy = size / 2
-    const particles: any[] = []
+    type Particle = {
+      x: number
+      y: number
+      r: number
+      vx: number
+      vy: number
+      a: number
+      c: string
+    }
+
+    const particles: Particle[] = []
     const cols = ['#1E53E5','#4478FF','#8B5CF6']
 
     function draw() {
@@ -50,7 +60,7 @@ export function Mochi({ size = 160 }: { size?: number }) {
       ctx.shadowBlur = 0
 
       ;[cx-12, cx+5].forEach(lx => {
-        ctx.beginPath(); (ctx as any).roundRect(lx, by+46, 11, 14, 6)
+        ctx.beginPath(); ctx.roundRect(lx, by+46, 11, 14, 6)
         const lg = ctx.createLinearGradient(lx, by+46, lx, by+60)
         lg.addColorStop(0,'#DDDAFF'); lg.addColorStop(1,'#B8AFFF'); ctx.fillStyle = lg; ctx.fill()
       })

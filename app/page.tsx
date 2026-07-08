@@ -1,9 +1,40 @@
 'use client'
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import dynamic from 'next/dynamic'
 import { CONTRACT_ADDRESS, CRYPTO_META, FOREX_META } from '@/lib/config'
 
 const Mochi = dynamic(() => import('@/components/Mochi').then(m => ({ default: m.Mochi })), { ssr: false })
+
+type CryptoPrice = {
+  symbol: keyof typeof CRYPTO_META
+  price: string
+  source: string
+  type: 'crypto'
+  updated_at: string
+}
+
+type ForexPrice = {
+  symbol: string
+  base: string
+  quote: keyof typeof FOREX_META
+  rate: string
+  source: string
+  type: 'forex'
+  updated_at: string
+}
+
+type PriceRecord = CryptoPrice | ForexPrice
+
+type OracleStats = {
+  total_symbols?: string
+  total_updates?: string
+}
+
+type PricesResponse = {
+  prices?: PriceRecord[]
+  stats?: OracleStats
+  error?: string
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function timeAgo(iso: string) {
@@ -14,24 +45,22 @@ function timeAgo(iso: string) {
   return `${Math.floor(d / 3600)}h ago`
 }
 
-function formatPrice(p: any) {
-  const n = parseFloat(p.price || p.rate || '0')
-  if (!n) return '—'
-  if (n > 1000) return `$${n.toLocaleString('en', { maximumFractionDigits: 2 })}`
-  if (n > 1)    return `${n.toFixed(4)}`
-  return `${n.toFixed(6)}`
-}
-
 function ThemeToggle() {
-  const [theme, setTheme] = useState<'dark'|'light'>('dark')
+  const [theme, setTheme] = useState<'dark'|'light'>(() => {
+    if (typeof window === 'undefined') return 'dark'
+    return (localStorage.getItem('po-theme') as 'dark'|'light' | null) || 'dark'
+  })
+
   useEffect(() => {
-    const s = localStorage.getItem('po-theme') as 'dark'|'light' | null
-    if (s) { setTheme(s); document.documentElement.setAttribute('data-theme', s) }
-  }, [])
+    document.documentElement.setAttribute('data-theme', theme)
+    localStorage.setItem('po-theme', theme)
+  }, [theme])
+
   function toggle() {
     const n = theme === 'dark' ? 'light' : 'dark'
-    setTheme(n); document.documentElement.setAttribute('data-theme', n); localStorage.setItem('po-theme', n)
+    setTheme(n)
   }
+
   return (
     <button onClick={toggle} style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 8, padding: '6px 10px', cursor: 'pointer', fontSize: 15 }}>
       {theme === 'dark' ? '☀️' : '🌙'}
@@ -52,7 +81,7 @@ function useReveal() {
 }
 
 // ── Price Card ────────────────────────────────────────────────────────────────
-function PriceCard({ item, index }: { item: any; index: number }) {
+function PriceCard({ item }: { item: PriceRecord }) {
   const isCrypto = item.type === 'crypto'
   const meta = isCrypto ? CRYPTO_META[item.symbol] : null
   const quoteMeta = !isCrypto ? FOREX_META[item.quote] : null
@@ -112,7 +141,7 @@ function PriceCard({ item, index }: { item: any; index: number }) {
 }
 
 // ── Ticker ────────────────────────────────────────────────────────────────────
-function Ticker({ prices }: { prices: any[] }) {
+function Ticker({ prices }: { prices: PriceRecord[] }) {
   if (!prices.length) return null
   const items = [...prices, ...prices] // duplicate for seamless loop
 
@@ -146,11 +175,12 @@ function Ticker({ prices }: { prices: any[] }) {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 export default function OraclePage() {
-  const [prices, setPrices] = useState<any[]>([])
-  const [stats, setStats] = useState<any>({})
+  const [prices, setPrices] = useState<PriceRecord[]>([])
+  const [stats, setStats] = useState<OracleStats>({})
   const [loading, setLoading] = useState(true)
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null)
   const [refreshing, setRefreshing] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   useReveal()
 
   const fetchPrices = useCallback(async (silent = false) => {
@@ -158,18 +188,25 @@ export default function OraclePage() {
     else setRefreshing(true)
     try {
       const res = await fetch('/api/prices', { cache: 'no-store' })
-      const data = await res.json()
+      const data = await res.json() as PricesResponse
+      if (!res.ok) throw new Error(data.error || 'Failed to read accepted contract state')
       if (Array.isArray(data.prices)) setPrices(data.prices)
       if (data.stats) setStats(data.stats)
       setLastRefresh(new Date())
-    } catch {}
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to read accepted contract state')
+    }
     setLoading(false)
     setRefreshing(false)
   }, [])
 
-  useEffect(() => { fetchPrices() }, [fetchPrices])
+  useEffect(() => {
+    const t = window.setTimeout(() => { void fetchPrices() }, 0)
+    return () => window.clearTimeout(t)
+  }, [fetchPrices])
 
-  // Auto-refresh every 30 seconds
+  // Poll accepted on-chain state every 30 seconds. This does not submit updates.
   useEffect(() => {
     const t = setInterval(() => fetchPrices(true), 30000)
     return () => clearInterval(t)
@@ -215,10 +252,10 @@ export default function OraclePage() {
             </div>
             <h1 className="font-display reveal" style={{ fontSize: 'clamp(32px,5vw,56px)', fontWeight: 800, lineHeight: 1.08, letterSpacing: '-0.03em', marginBottom: 16 }}>
               On-Chain Price Feed<br />
-              <span style={{ background: 'var(--grad)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>Verified by AI.</span>
+              <span style={{ background: 'var(--grad)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>Validator checked.</span>
             </h1>
             <p className="reveal reveal-d1" style={{ fontSize: 16, lineHeight: 1.75, color: 'var(--muted)', maxWidth: 480, marginBottom: 28 }}>
-              Live crypto and forex prices fetched from public APIs and verified by 5 independent GenLayer validators before being written on-chain.
+              Crypto and forex values are fetched by the contract from public APIs, checked by GenLayer validators for valid JSON shape and positive numeric values, then written on-chain.
             </p>
 
             {/* Stats row */}
@@ -226,7 +263,7 @@ export default function OraclePage() {
               {[
                 { val: stats.total_symbols || String(prices.length), label: 'Pairs tracked' },
                 { val: stats.total_updates || '—', label: 'Total updates' },
-                { val: '5', label: 'AI validators' },
+                { val: '5', label: 'validator checks' },
                 { val: lastRefresh ? timeAgo(lastRefresh.toISOString()) : '—', label: 'Last refresh' },
               ].map(({ val, label }) => (
                 <div key={label}>
@@ -253,15 +290,21 @@ export default function OraclePage() {
             <h2 className="font-display reveal" style={{ fontSize: 24, fontWeight: 800, letterSpacing: '-0.02em' }}>Crypto Prices</h2>
           </div>
           <span className="badge" style={{ color: 'var(--muted)', background: 'var(--surface)', border: '1px solid var(--border)', fontSize: 11 }}>
-            Auto-refresh · 30s
+            Reads accepted state · 30s
           </span>
         </div>
+
+        {error && (
+          <div className="panel" style={{ marginBottom: 20, color: 'var(--muted)', fontSize: 13 }}>
+            Could not read accepted contract state: {error}
+          </div>
+        )}
 
         {loading ? (
           <div style={{ display: 'flex', justifyContent: 'center', padding: 60 }}><div className="spinner" style={{ width: 32, height: 32 }} /></div>
         ) : (
           <div className="price-grid">
-            {cryptoPrices.map((p, i) => <PriceCard key={p.symbol} item={p} index={i} />)}
+            {cryptoPrices.map(p => <PriceCard key={p.symbol} item={p} />)}
           </div>
         )}
       </div>
@@ -273,7 +316,7 @@ export default function OraclePage() {
           <h2 className="font-display reveal" style={{ fontSize: 24, fontWeight: 800, letterSpacing: '-0.02em' }}>Forex Rates</h2>
         </div>
         <div className="price-grid">
-          {forexPrices.map((p, i) => <PriceCard key={p.symbol} item={p} index={i} />)}
+          {forexPrices.map(p => <PriceCard key={p.symbol} item={p} />)}
         </div>
       </div>
 
@@ -284,7 +327,7 @@ export default function OraclePage() {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 20 }}>
             {[
               { n: '01', t: 'Fetch', d: 'Contract fetches price from Binance or forex APIs inside a nondet block', c: 'var(--blue)' },
-              { n: '02', t: 'Verify', d: '5 independent GenLayer validators each check the output format and value', c: 'var(--purple)' },
+              { n: '02', t: 'Validate', d: 'GenLayer validators check JSON format, expected fields, and positive numeric values. They do not prove market correctness.', c: 'var(--purple)' },
               { n: '03', t: 'Store', d: 'Price is written on-chain with timestamp — any dApp can read it instantly', c: 'var(--green)' },
             ].map(({ n, t, d, c }, i) => (
               <div key={n} className={`panel reveal reveal-d${i+1}`} style={{ borderTop: `3px solid ${c}`, paddingTop: 20 }}>
@@ -318,7 +361,7 @@ export default function OraclePage() {
             <span className="font-display" style={{ fontSize: 14, fontWeight: 700 }}>PriceOracle</span>
             <span style={{ color: 'var(--muted)', fontSize: 13 }}>by Manablaq</span>
           </div>
-          <p style={{ fontSize: 12, color: 'var(--muted)' }}>Built on GenLayer Bradbury Testnet · Prices auto-refresh every 30s</p>
+          <p style={{ fontSize: 12, color: 'var(--muted)' }}>Built on GenLayer Bradbury Testnet · Frontend reads accepted state every 30s</p>
         </div>
       </footer>
 
