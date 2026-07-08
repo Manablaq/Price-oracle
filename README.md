@@ -12,8 +12,8 @@ https://price-oracle-delta.vercel.app
 - Contract address: `0x3bfa3494C7AEB35489436A5325DD0D8F51BE5E0B`
 - Contract source: `contracts/price_oracle.py`
 - Explorer: `https://explorer-bradbury.genlayer.com/address/0x3bfa3494C7AEB35489436A5325DD0D8F51BE5E0B`
-- Deployment transaction hash: 
-- Update transaction proof: 
+- Contract proof: the deployed Bradbury contract is verifiable at the explorer link above.
+- Update transaction proof: `0x0e87e2e6cccfae6467ad8f17574f3b1d10088a309b9c7d1eea5cdca99c51951e`
 
 ## What Validators Check
 
