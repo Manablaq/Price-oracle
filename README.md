@@ -1,74 +1,85 @@
-# PriceOracle - GenLayer On-Chain Price Feed
+# PriceGuard Covenant
 
-PriceOracle is a GenLayer Bradbury testnet oracle that stores crypto and forex price records on-chain. The frontend reads the latest accepted contract state from Bradbury; it does not submit update transactions on a timer.
+PriceGuard Covenant is an undeployed, non-custodial GenLayer protocol for
+independently verified BTC/USD market covenants and evidence attestations. It
+records market evidence and covenant state only. The V2 contract has no payable
+method, balance accounting, transfer, claim, refund, or settlement path.
 
-## Live App
+## Why GenLayer
 
-https://price-oracle-delta.vercel.app
+The leader fetches three fixed exchange endpoints. Validators independently
+fetch the same venues, recompute fixed-point median and dispersion, and reject a
+leader result that does not match the declared policy. Contract storage changes
+happen only after nondeterministic consensus returns.
 
-## Network And Contract
+## V1 versus V2
 
-- Network: GenLayer Bradbury Testnet
-- Contract address: `0x3bfa3494C7AEB35489436A5325DD0D8F51BE5E0B`
-- Contract source: `contracts/price_oracle.py`
-- Explorer: `https://explorer-bradbury.genlayer.com/address/0x3bfa3494C7AEB35489436A5325DD0D8F51BE5E0B`
-- Contract proof: the deployed Bradbury contract is verifiable at the explorer link above.
-- Update transaction proof: `0x0e87e2e6cccfae6467ad8f17574f3b1d10088a309b9c7d1eea5cdca99c51951e`
+The reviewer-rejected V1 source remains unchanged in
+`contracts/price_oracle.py`. Its historical Bradbury address is
+`0x3bfa3494C7AEB35489436A5325DD0D8F51BE5E0B`. V1 performed shape-oriented
+validation and must not be described as PriceGuard V2.
 
-## What Validators Check
+V2 is `contracts/priceguard.py`. It requires a new deployment and address.
 
-The contract uses `gl.eq_principle.prompt_non_comparative` around nondeterministic web requests. The consensus criteria are format-oriented because public prices can change between validator calls.
+## Covenant lifecycle
 
-For crypto updates, validators check that the result is valid JSON with:
+1. Create a PERSONAL or BILATERAL covenant with a deterministic ID.
+2. The named bilateral counterparty accepts before expiry.
+3. Anyone may evaluate an ACTIVE covenant inside its validity window.
+4. Evaluation requires all three configured sources, HIGH confidence, no
+   circuit breaker, and the covenant spread limit.
+5. Every evaluation creates an exact attestation. A satisfied result moves the
+   covenant to TRIGGERED.
+6. PERSONAL covenants close after creator acknowledgement. BILATERAL covenants
+   close after both named parties acknowledge.
+7. External systems decide how to use the evidence; PriceGuard executes no
+   external action.
 
-- `symbol` equal to the requested trading pair
-- `price` as a non-empty positive number string
-- `source` equal to `binance`
+## Transaction handling
 
-For forex updates, validators check that the result is valid JSON with:
+The frontend follows the GenLayerJS finality model:
 
-- `base` and `quote` equal to the requested currencies
-- `rate` as a non-empty positive number string
-- `source` equal to the selected data provider
+- `ACCEPTED` and `READY_TO_FINALIZE` remain nonterminal.
+- A transaction is successful only at `FINALIZED` with
+  `FINISHED_WITH_RETURN`.
+- `FINISHED_WITH_ERROR`, cancellation, timeout, and undetermined consensus are
+  displayed separately.
+- Post-finalization contract reads are supplementary UX checks. They never
+  override the protocol execution result, because later valid transactions may
+  already have advanced the same covenant.
+- Writes are never automatically resubmitted.
 
-The deployed contract does not independently prove that a returned price or rate is the correct market value. It validates response structure, expected fields, and positive numeric values before storing accepted state.
+## Storage and pagination
 
-## Data Sources
+Exact covenant and attestation records are addressable by ID. The global
+attestation discovery ring retains 256 IDs, each covenant evaluation ring
+retains 32 IDs, and every public page is bounded to 50 items. Creator and
+counterparty indexes grow without an artificial per-wallet record cap.
 
-- Crypto: Binance public ticker price API
-- Major forex pairs: Frankfurter API using ECB-based rates
-- African forex pairs: ExchangeRate API
+## Active routes
 
-Tracked pairs in the frontend:
+`/`, `/markets`, `/covenants`, `/covenants/new`, `/covenants/[id]`,
+`/attestations`, `/attestations/[id]`, `/activity`, `/integrations`, and
+`/about/verification`. Historical `/vaults` URLs only redirect to covenants.
 
-- Crypto: `BTCUSDT`, `ETHUSDT`, `SOLUSDT`, `BNBUSDT`
-- Forex: `USD/NGN`, `USD/GHS`, `USD/KES`, `USD/EUR`, `USD/GBP`
+## Current status
 
-## Contract Methods
-
-- `update_crypto_price(symbol)` - fetches a Binance trading pair price and stores an accepted crypto record.
-- `update_forex_rate(base, quote)` - fetches a forex rate and stores an accepted forex record.
-- `get_price(symbol)` - returns the latest stored record for one symbol or pair.
-- `get_all_prices()` - returns all stored records in `symbol_list` order.
-- `get_supported_symbols()` - returns all symbols currently tracked by the contract.
-- `get_stats()` - returns total tracked symbols and total update count.
-
-## Frontend Behavior
-
-The Next.js API route at `app/api/prices/route.ts` uses `genlayer-js` to read `get_all_prices` and `get_stats` from the deployed contract with `stateStatus: 'accepted'`.
-
-The page polls `/api/prices` every 30 seconds. This refresh interval only re-reads the latest accepted on-chain oracle state; it does not update prices on-chain or send write transactions.
+V2 is not deployed and no Bradbury V2 write has been sent. A clean local pass
+must be followed by browser QA, deployment to a new Bradbury address, and real
+lifecycle transactions before the repository can claim testnet completion.
 
 ## Verification
 
 ```bash
-npm install
+npm ci
 npm run lint
+npx tsc --noEmit
+npm test
 npm run build
+PYTHONPYCACHEPREFIX=/private/tmp/priceguard-pycache \
+  python3 -m unittest discover -s tests -v
+/Users/mralbert/.venvs/genvm-lint/bin/genvm-lint check contracts/priceguard.py
+/Users/mralbert/.venvs/genvm-lint/bin/genvm-lint schema contracts/priceguard.py
+npm audit --omit=dev
+git diff --check
 ```
-
-`npm run build` uses Next.js 16 with Turbopack. In this development environment, the build may need permission to run outside a restricted sandbox because Turbopack/PostCSS spawns a worker process that binds a local port.
-
-## Contract Change Policy
-
-The published contract address points to the currently deployed contract. Strengthening validator criteria in `contracts/price_oracle.py` would change contract behavior and should be treated as requiring redeployment plus updated address and transaction proof. This repository should not claim stronger validation for the deployed address until that redeployment is done and documented.

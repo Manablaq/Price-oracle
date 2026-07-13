@@ -1,33 +1,21 @@
-export const CONTRACT_ADDRESS = '0x3bfa3494C7AEB35489436A5325DD0D8F51BE5E0B' as `0x${string}`
+export const LEGACY_V1_ADDRESS = '0x3bfa3494C7AEB35489436A5325DD0D8F51BE5E0B' as const
+export const LEGACY_V1_UPDATE_TX = '0x0e87e2e6cccfae6467ad8f17574f3b1d10088a309b9c7d1eea5cdca99c51951e' as const
 
-export const BRADBURY_CHAIN = {
-  id: 4221,
-  name: 'GenLayer Bradbury',
-  nativeCurrency: { name: 'GEN', symbol: 'GEN', decimals: 18 },
-  rpcUrls: { default: { http: ['https://rpc-bradbury.genlayer.com'] } },
-  blockExplorers: { default: { name: 'GenExplorer', url: 'https://explorer-bradbury.genlayer.com' } },
+const configuredV2 = process.env.NEXT_PUBLIC_PRICEGUARD_V2_ADDRESS || ''
+export const PRICEGUARD_V2_ADDRESS = /^0x[0-9a-fA-F]{40}$/.test(configuredV2)
+  ? configuredV2 as `0x${string}`
+  : null
+
+export const CHAIN_ID = 4221
+export const EXPLORER_URL = 'https://explorer-bradbury.genlayer.com'
+export const POLICY = {
+  symbol: 'BTC/USD',
+  decimals: 2,
+  sources: ['Coinbase Exchange', 'Bitstamp', 'Gemini'],
+  refreshRequiredSources: 2,
+  evaluationRequiredSources: 3,
+  maxSpreadBps: 100,
+  validatorToleranceBps: 50,
+  maxAgeSeconds: 120,
+  version: 'BTCUSD-1',
 } as const
-
-export const CRYPTO_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT']
-export const FOREX_PAIRS = [
-  { base: 'USD', quote: 'NGN' },
-  { base: 'USD', quote: 'GHS' },
-  { base: 'USD', quote: 'KES' },
-  { base: 'USD', quote: 'EUR' },
-  { base: 'USD', quote: 'GBP' },
-]
-
-export const CRYPTO_META: Record<string, { name: string; emoji: string; color: string }> = {
-  BTCUSDT: { name: 'Bitcoin',  emoji: '₿', color: '#F7931A' },
-  ETHUSDT: { name: 'Ethereum', emoji: 'Ξ', color: '#627EEA' },
-  SOLUSDT: { name: 'Solana',   emoji: '◎', color: '#9945FF' },
-  BNBUSDT: { name: 'BNB',      emoji: 'B', color: '#F3BA2F' },
-}
-
-export const FOREX_META: Record<string, { flag: string; name: string }> = {
-  NGN: { flag: '🇳🇬', name: 'Nigerian Naira' },
-  GHS: { flag: '🇬🇭', name: 'Ghanaian Cedi' },
-  KES: { flag: '🇰🇪', name: 'Kenyan Shilling' },
-  EUR: { flag: '🇪🇺', name: 'Euro' },
-  GBP: { flag: '🇬🇧', name: 'British Pound' },
-}

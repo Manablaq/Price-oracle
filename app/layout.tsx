@@ -1,6 +1,12 @@
 import type { Metadata } from 'next'
+import { Providers } from '@/components/Providers'
 import './globals.css'
-export const metadata: Metadata = { title: 'PriceOracle — GenLayer On-Chain Price Feed', description: 'Crypto and forex prices stored on GenLayer Bradbury after validator format checks.' }
+
+export const metadata: Metadata = {
+  title: { default: 'PriceGuard — Market Covenants', template: '%s · PriceGuard' },
+  description: 'Non-custodial GenLayer market covenants and evidence attestations.',
+}
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
-  return <html lang="en"><body>{children}</body></html>
+  return <html lang="en"><body><Providers>{children}</Providers></body></html>
 }
