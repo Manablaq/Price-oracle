@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { CHAIN_ID } from '@/lib/config'
 import { covenantId, parseCreateTerms, ZERO_ADDRESS } from '@/lib/priceguard-core.mjs'
 import type { ConditionType, CovenantMode } from '@/lib/types'
 import { useTransactions } from './TransactionManager'
@@ -13,7 +14,7 @@ const toEpoch = (value: string) => {
 }
 
 export function NewCovenantForm() {
-  const { wallet } = useTransactions()
+  const { wallet, chainId, switchNetwork } = useTransactions()
   const [request, setRequest] = useState('request_1')
   const [mode, setMode] = useState<CovenantMode>('PERSONAL')
   const [counterparty, setCounterparty] = useState('')
@@ -80,7 +81,9 @@ export function NewCovenantForm() {
     validationError = error instanceof Error ? error.message : 'The form is invalid.'
   }
 
-  return <div className="panel form-grid">
+  return <div className="form-stack">
+    {wallet && chainId !== CHAIN_ID && <div className="panel network-warning" role="status"><div><strong>Bradbury network required</strong><p>Switch this wallet to chain {CHAIN_ID} before publishing a covenant.</p></div><button type="button" className="button secondary" onClick={() => void switchNetwork()}>Switch to Bradbury</button></div>}
+    <div className="panel form-grid">
     <label>Client request ID<input value={request} maxLength={48} onChange={event => setRequest(event.target.value)} /></label>
     <p className="muted">Covenant ID: <code>{preview.status === 'READY' && preview.key === previewKey ? preview.id : preview.status === 'FAILED' ? 'unavailable' : 'computing…'}</code></p>
 
@@ -102,5 +105,6 @@ export function NewCovenantForm() {
     <p className="muted">Non-custodial protocol: no GEN amount, claim, refund, or transfer is part of this covenant.</p>
     {validationError && <p className="form-error" role="status">{validationError}</p>}
     <WriteButton action="create" functionName="create_covenant" args={args} disabled={Boolean(validationError)}>Publish covenant</WriteButton>
+    </div>
   </div>
 }

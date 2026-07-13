@@ -1,6 +1,20 @@
-# Bradbury deployment checklist
+# Bradbury deployment record and remaining QA
 
-PriceGuard V2 is not deployed. This checklist does not authorize deployment.
+PriceGuard V2 is deployed on GenLayer Bradbury Testnet (chain ID 4221). This
+record does not authorize another deployment.
+
+## Active deployment
+
+- Contract: `0x7B939483E69ada6d2ca37acd3684182Ed141F35F`
+- Deployment transaction: `0x0bec3ce3653dab8e1135bf2a2b547816905c132d78dabfc1f998f898c3f6bf69`
+- First successful market refresh transaction: `0x7516d2370b7067d1cfbde1ee8ec21ca0294e85f3902ac2c0b9c702f5aba6b313`
+- Deployed contract source SHA-256: `bdd0fac72f9659d76e03c04c60d55f1be4a46127da691fa9265cc77bd10b125a`
+- Deployment source commit: `645e49a73e32cc0fdb12fda459d0fc7fa3b4d8f9`
+- Production frontend: <https://price-oracle-delta.vercel.app>
+
+The first market update is verified. The contract is non-custodial: it has no
+payable, balance, transfer, claim, refund, or settlement path. The full covenant
+create/evaluate/expire/acknowledge lifecycle remains unverified.
 
 ## Clean local gate
 
@@ -12,37 +26,27 @@ PriceGuard V2 is not deployed. This checklist does not authorize deployment.
 5. Review the exact source endpoints, policy constants, timestamps, fixed-point
    bounds, deterministic IDs, retained indexes, and account pagination.
 6. Complete browser QA for every active route at mobile, tablet, and desktop
-   viewports, including disconnected, wrong-network, undeployed, loading,
+   viewports, including disconnected, wrong-network, loading,
    malformed-data, not-found, and RPC-error states.
 
-## Deploy
+## Deployment configuration
 
-Deploy `contracts/priceguard.py` as a new contract on Testnet Bradbury. Never
-reuse or relabel the V1 address. Record:
+The production configuration must use only the active V2 address. Never reuse
+or relabel the V1 address.
 
-- new V2 contract address;
-- deployment transaction hash;
-- source SHA-256;
-- runner dependency hash;
-- chain ID 4221;
-- generated schema;
-- explorer links.
-
-Set:
+Set for a reproducible frontend build:
 
 ```text
-NEXT_PUBLIC_PRICEGUARD_V2_ADDRESS=0x<new-v2-address>
+NEXT_PUBLIC_PRICEGUARD_V2_ADDRESS=0x7B939483E69ada6d2ca37acd3684182Ed141F35F
 ```
-
-Rebuild and deploy the frontend only after the address is present in every
-configuration and document that requires it.
 
 ## Real lifecycle evidence
 
 Use separate disposable wallets where needed and preserve receipt plus state
 reads for:
 
-1. `refresh_market`;
+1. Preserve the verified `refresh_market` evidence above and repeat only when
+   fresh market evidence is required;
 2. PERSONAL `create_covenant`;
 3. BILATERAL `create_covenant`;
 4. `accept_covenant`;
@@ -59,7 +63,7 @@ resubmit an unknown or delayed transaction.
 
 ## Final repository update
 
-After real QA, update the V2 address, deployment transaction, source hash,
-manual QA evidence, and live frontend URL. Re-run the clean local gate and
-perform production browser QA. Do not call the system production-safe merely
-because testnet smoke tests pass.
+After real lifecycle QA, add the transaction and state-read evidence without
+replacing the active deployment record above. Re-run the clean local gate and
+perform production browser QA. Do not call the full lifecycle verified or the
+system production-safe merely because one market update succeeded on testnet.

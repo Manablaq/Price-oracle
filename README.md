@@ -1,6 +1,6 @@
 # PriceGuard Covenant
 
-PriceGuard Covenant is an undeployed, non-custodial GenLayer protocol for
+PriceGuard Covenant is a deployed, non-custodial GenLayer Bradbury Testnet protocol for
 independently verified BTC/USD market covenants and evidence attestations. It
 records market evidence and covenant state only. The V2 contract has no payable
 method, balance accounting, transfer, claim, refund, or settlement path.
@@ -19,7 +19,8 @@ The reviewer-rejected V1 source remains unchanged in
 `0x3bfa3494C7AEB35489436A5325DD0D8F51BE5E0B`. V1 performed shape-oriented
 validation and must not be described as PriceGuard V2.
 
-V2 is `contracts/priceguard.py`. It requires a new deployment and address.
+V2 is `contracts/priceguard.py`. The active Bradbury deployment is
+`0x7B939483E69ada6d2ca37acd3684182Ed141F35F` on chain 4221.
 
 ## Covenant lifecycle
 
@@ -64,9 +65,18 @@ counterparty indexes grow without an artificial per-wallet record cap.
 
 ## Current status
 
-V2 is not deployed and no Bradbury V2 write has been sent. A clean local pass
-must be followed by browser QA, deployment to a new Bradbury address, and real
-lifecycle transactions before the repository can claim testnet completion.
+The active V2 contract was deployed from commit
+`645e49a73e32cc0fdb12fda459d0fc7fa3b4d8f9`; the deployed source SHA-256 is
+`bdd0fac72f9659d76e03c04c60d55f1be4a46127da691fa9265cc77bd10b125a`.
+Deployment transaction:
+`0x0bec3ce3653dab8e1135bf2a2b547816905c132d78dabfc1f998f898c3f6bf69`.
+
+One market update is verified. Its first successful refresh transaction is
+`0x7516d2370b7067d1cfbde1ee8ec21ca0294e85f3902ac2c0b9c702f5aba6b313`.
+The production frontend is <https://price-oracle-delta.vercel.app>. PriceGuard
+remains non-custodial. The full create/evaluate/expire/acknowledge covenant
+lifecycle has not yet been verified on Bradbury and must not be described as
+complete.
 
 ## Verification
 

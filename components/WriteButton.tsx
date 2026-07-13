@@ -46,6 +46,7 @@ export function WriteButton({ action, functionName, args, covenantId, children, 
 
   return <div className="write-control">
     <button
+      type="button"
       className="button primary"
       disabled={disabled || submitting || pending || !PRICEGUARD_V2_ADDRESS || !providerAvailable}
       onClick={() => void click()}

@@ -22,7 +22,9 @@ MAJORITY_AGREE compatibility, fixed-point formatting, exact shared ID vectors,
 create-argument validation, stale hash binding, independent pagination,
 authorization windows, strict contract response guards, retained attestation
 pagination, activity persistence validation, and responsive/reduced-motion
-safeguards.
+safeguards. It also checks manual app-session disconnect behavior, explicit
+wallet/network controls, EIP-6963 injected-provider selection, covenant creation
+navigation, mobile wallet-control containment, and active deployment wording.
 
 ```bash
 npm ci

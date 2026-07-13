@@ -32,9 +32,13 @@ type ContextValue = {
   wallet: string
   chainId: number | null
   providerAvailable: boolean
+  injectedProviders: Array<{ id: string; name: string }>
+  selectedProviderId: string
   connecting: boolean
   activities: Activity[]
   connect: () => Promise<void>
+  disconnect: () => void
+  selectProvider: (id: string) => void
   switchNetwork: () => Promise<void>
   submit: (spec: SubmitSpec) => Promise<string>
   isPending: (action: string, covenantId?: string) => boolean
@@ -63,9 +67,13 @@ const Context = createContext<ContextValue>({
   wallet: '',
   chainId: null,
   providerAvailable: false,
+  injectedProviders: [],
+  selectedProviderId: '',
   connecting: false,
   activities: [],
   connect: async () => undefined,
+  disconnect: () => undefined,
+  selectProvider: () => undefined,
   switchNetwork: async () => undefined,
   submit: async () => '',
   isPending: () => false,
@@ -96,14 +104,13 @@ async function createReadClient(): Promise<ReadClient> {
   return createClient({ chain: testnetBradbury }) as unknown as ReadClient
 }
 
-async function createWriteClient(wallet: string): Promise<WriteClient> {
-  if (!window.ethereum) throw new Error('No injected wallet was detected.')
+async function createWriteClient(provider: EthereumProvider, wallet: string): Promise<WriteClient> {
   const { createClient } = await import('genlayer-js')
   const { testnetBradbury } = await import('genlayer-js/chains')
   return createClient({
     chain: testnetBradbury,
     account: wallet as `0x${string}`,
-    provider: window.ethereum,
+    provider,
   }) as unknown as WriteClient
 }
 
@@ -179,32 +186,77 @@ async function checkPostState(client: ReadClient, address: `0x${string}`, activi
 export function TransactionManager({ children }: { children: React.ReactNode }) {
   const [wallet, setWallet] = useState('')
   const [chainId, setChainId] = useState<number | null>(null)
-  const [providerAvailable, setProviderAvailable] = useState(false)
+  const [injectedProviderOptions, setInjectedProviderOptions] = useState<Array<{ id: string; name: string; provider: EthereumProvider }>>([])
+  const [selectedProvider, setSelectedProvider] = useState<EthereumProvider | null>(null)
   const [connecting, setConnecting] = useState(false)
   const [activities, setActivities] = useState<Activity[]>([])
   const pollers = useRef(new Set<string>())
+  const manuallyDisconnected = useRef(false)
+  const sessionGeneration = useRef(0)
+
+  const providerAvailable = Boolean(selectedProvider)
+  const selectedProviderId = injectedProviderOptions.find(option => option.provider === selectedProvider)?.id ?? ''
 
   useEffect(() => {
-    const ethereum = window.ethereum
-    setProviderAvailable(Boolean(ethereum))
+    manuallyDisconnected.current = localStorage.getItem('priceguard:manually-disconnected') === 'true'
+    const legacyProvider = window.ethereum
+    if (legacyProvider) {
+      setInjectedProviderOptions([{ id: 'legacy-injected', name: 'Injected wallet', provider: legacyProvider }])
+      setSelectedProvider(legacyProvider)
+    }
+
+    const announced = new Map<string, { id: string; name: string; provider: EthereumProvider }>()
+    const onAnnounce = (event: Event) => {
+      const detail = (event as CustomEvent<{ info?: { uuid?: unknown; name?: unknown }; provider?: EthereumProvider }>).detail
+      if (typeof detail?.info?.uuid !== 'string' || typeof detail.info.name !== 'string' || typeof detail.provider?.request !== 'function') return
+      announced.set(detail.info.uuid, { id: detail.info.uuid, name: detail.info.name, provider: detail.provider })
+      const options = [...announced.values()]
+      setInjectedProviderOptions(options)
+      setSelectedProvider(current => {
+        if (current && current !== legacyProvider && options.some(option => option.provider === current)) return current
+        return options.find(option => option.provider === legacyProvider)?.provider ?? options[0]?.provider ?? null
+      })
+    }
+
+    window.addEventListener('eip6963:announceProvider', onAnnounce)
+    window.dispatchEvent(new Event('eip6963:requestProvider'))
+    return () => window.removeEventListener('eip6963:announceProvider', onAnnounce)
+  }, [])
+
+  useEffect(() => {
+    const ethereum = selectedProvider
     if (!ethereum) return
 
+    sessionGeneration.current += 1
+    setWallet('')
+    setChainId(null)
+    setActivities([])
     let mounted = true
-    void Promise.all([
-      ethereum.request({ method: 'eth_accounts' }),
-      ethereum.request({ method: 'eth_chainId' }),
-    ]).then(([accountsRaw, chainRaw]) => {
-      if (!mounted) return
-      const accounts = Array.isArray(accountsRaw) ? accountsRaw.filter((item): item is string => typeof item === 'string') : []
-      setWallet(accounts[0] ?? '')
-      setChainId(normalizeChainId(chainRaw))
-    }).catch(() => undefined)
+    if (!manuallyDisconnected.current) {
+      void Promise.all([
+        ethereum.request({ method: 'eth_accounts' }),
+        ethereum.request({ method: 'eth_chainId' }),
+      ]).then(([accountsRaw, chainRaw]) => {
+        if (!mounted || manuallyDisconnected.current) return
+        const accounts = Array.isArray(accountsRaw) ? accountsRaw.filter((item): item is string => typeof item === 'string') : []
+        setWallet(accounts[0] ?? '')
+        setChainId(normalizeChainId(chainRaw))
+      }).catch(() => undefined)
+    } else {
+      setWallet('')
+      setChainId(null)
+    }
 
     const onAccounts = (...args: unknown[]) => {
+      if (manuallyDisconnected.current) return
       const accounts = Array.isArray(args[0]) ? args[0].filter((item): item is string => typeof item === 'string') : []
+      sessionGeneration.current += 1
+      setActivities([])
       setWallet(accounts[0] ?? '')
     }
-    const onChain = (...args: unknown[]) => setChainId(normalizeChainId(args[0]))
+    const onChain = (...args: unknown[]) => {
+      if (!manuallyDisconnected.current) setChainId(normalizeChainId(args[0]))
+    }
     ethereum.on?.('accountsChanged', onAccounts)
     ethereum.on?.('chainChanged', onChain)
     return () => {
@@ -212,7 +264,7 @@ export function TransactionManager({ children }: { children: React.ReactNode }) 
       ethereum.removeListener?.('accountsChanged', onAccounts)
       ethereum.removeListener?.('chainChanged', onChain)
     }
-  }, [])
+  }, [selectedProvider])
 
   const storageKey = useMemo(() => wallet && PRICEGUARD_V2_ADDRESS
     ? activityNamespace(CHAIN_ID, PRICEGUARD_V2_ADDRESS, wallet)
@@ -229,28 +281,46 @@ export function TransactionManager({ children }: { children: React.ReactNode }) 
   }, [storageKey])
 
   const connect = useCallback(async () => {
-    if (!window.ethereum) throw new Error('No injected wallet was detected.')
+    if (!selectedProvider) throw new Error('No injected wallet was detected.')
+    manuallyDisconnected.current = false
+    localStorage.removeItem('priceguard:manually-disconnected')
     setConnecting(true)
     try {
-      const accountsRaw = await window.ethereum.request({ method: 'eth_requestAccounts' })
+      const accountsRaw = await selectedProvider.request({ method: 'eth_requestAccounts' })
       const accounts = Array.isArray(accountsRaw) ? accountsRaw.filter((item): item is string => typeof item === 'string') : []
       if (!accounts[0]) throw new Error('Wallet did not return an account.')
+      sessionGeneration.current += 1
+      setActivities([])
       setWallet(accounts[0])
-      setChainId(normalizeChainId(await window.ethereum.request({ method: 'eth_chainId' })))
+      setChainId(normalizeChainId(await selectedProvider.request({ method: 'eth_chainId' })))
     } finally {
       setConnecting(false)
     }
+  }, [selectedProvider])
+
+  const disconnect = useCallback(() => {
+    manuallyDisconnected.current = true
+    localStorage.setItem('priceguard:manually-disconnected', 'true')
+    sessionGeneration.current += 1
+    setWallet('')
+    setChainId(null)
+    setActivities([])
   }, [])
 
+  const selectProvider = useCallback((id: string) => {
+    const option = injectedProviderOptions.find(item => item.id === id)
+    if (option) setSelectedProvider(option.provider)
+  }, [injectedProviderOptions])
+
   const switchNetwork = useCallback(async () => {
-    if (!window.ethereum) throw new Error('No injected wallet was detected.')
+    if (!selectedProvider) throw new Error('No injected wallet was detected.')
     if (!wallet) await connect()
-    const currentWallet = wallet || String((await window.ethereum.request({ method: 'eth_accounts' }) as string[])[0] ?? '')
+    const currentWallet = wallet || String((await selectedProvider.request({ method: 'eth_accounts' }) as string[])[0] ?? '')
     if (!currentWallet) throw new Error('Connect an injected wallet first.')
-    const client = await createWriteClient(currentWallet)
+    const client = await createWriteClient(selectedProvider, currentWallet)
     await client.connect('testnetBradbury')
-    setChainId(normalizeChainId(await window.ethereum.request({ method: 'eth_chainId' })))
-  }, [connect, wallet])
+    setChainId(normalizeChainId(await selectedProvider.request({ method: 'eth_chainId' })))
+  }, [connect, selectedProvider, wallet])
 
   useEffect(() => {
     if (!storageKey) { setActivities([]); return }
@@ -275,6 +345,7 @@ export function TransactionManager({ children }: { children: React.ReactNode }) 
 
   const poll = useCallback(async (activity: Activity) => {
     if (pollers.current.has(activity.hash) || !PRICEGUARD_V2_ADDRESS) return
+    const generation = sessionGeneration.current
     pollers.current.add(activity.hash)
     try {
       const client = await createReadClient()
@@ -282,6 +353,7 @@ export function TransactionManager({ children }: { children: React.ReactNode }) 
       const classification = classifyTransaction(tx) as Pick<Activity, 'phase' | 'terminal'>
       let stateCheckUpdate: Partial<Activity> = {}
       if (classification.phase === 'CONFIRMED') stateCheckUpdate = await checkPostState(client, PRICEGUARD_V2_ADDRESS, activity)
+      if (generation !== sessionGeneration.current) return
       storeActivities(current => mergeActivity(current, [{
         ...activity,
         ...classification,
@@ -290,6 +362,7 @@ export function TransactionManager({ children }: { children: React.ReactNode }) 
         updatedAt: Date.now(),
       }]) as Activity[])
     } catch (error) {
+      if (generation !== sessionGeneration.current) return
       storeActivities(current => mergeActivity(current, [{
         ...activity,
         phase: 'UNKNOWN_RETRYABLE',
@@ -317,15 +390,15 @@ export function TransactionManager({ children }: { children: React.ReactNode }) 
 
   const submit = useCallback(async (spec: SubmitSpec) => {
     if (!PRICEGUARD_V2_ADDRESS) throw new Error('PriceGuard V2 is not deployed or configured.')
-    if (!wallet || !window.ethereum) throw new Error('Connect an injected wallet first.')
+    if (!wallet || !selectedProvider) throw new Error('Connect an injected wallet first.')
     if (chainId !== CHAIN_ID) throw new Error('Switch to Bradbury (chain 4221) before writing.')
     if (isPending(spec.action, spec.covenantId)) throw new Error('This action already has an unfinished transaction. It will not be resubmitted.')
 
     const readClient = await createReadClient()
     const prepared = await prepareSubmission(readClient, PRICEGUARD_V2_ADDRESS, spec, wallet)
-    const writeClient = await createWriteClient(wallet)
+    const writeClient = await createWriteClient(selectedProvider, wallet)
     await writeClient.connect('testnetBradbury')
-    const currentChain = normalizeChainId(await window.ethereum.request({ method: 'eth_chainId' }))
+    const currentChain = normalizeChainId(await selectedProvider.request({ method: 'eth_chainId' }))
     if (currentChain !== CHAIN_ID) throw new Error('Wallet did not switch to Bradbury chain 4221.')
 
     const hash = await writeClient.writeContract({
@@ -352,9 +425,11 @@ export function TransactionManager({ children }: { children: React.ReactNode }) 
     }
     storeActivities(current => mergeActivity(current, [activity]) as Activity[])
     return hash
-  }, [chainId, isPending, storeActivities, wallet])
+  }, [chainId, isPending, selectedProvider, storeActivities, wallet])
 
-  return <Context.Provider value={{ wallet, chainId, providerAvailable, connecting, activities, connect, switchNetwork, submit, isPending }}>{children}</Context.Provider>
+  const injectedProviders = useMemo(() => injectedProviderOptions.map(({ id, name }) => ({ id, name })), [injectedProviderOptions])
+
+  return <Context.Provider value={{ wallet, chainId, providerAvailable, injectedProviders, selectedProviderId, connecting, activities, connect, disconnect, selectProvider, switchNetwork, submit, isPending }}>{children}</Context.Provider>
 }
 
 export const useTransactions = () => useContext(Context)

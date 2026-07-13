@@ -364,3 +364,71 @@ test('responsive and reduced-motion safeguards remain present', async () => {
   assert.match(css, /\.code-block\s*\{[^}]*max-width:\s*100%[^}]*overflow-x:\s*auto/s)
   assert.match(css, /\.form-grid code\s*\{[^}]*overflow-wrap:\s*anywhere[^}]*word-break:\s*break-word/s)
 })
+
+test('transaction context exposes a real app-session disconnect', async () => {
+  const source = await readFile(new URL('../components/TransactionManager.tsx', import.meta.url), 'utf8')
+  assert.match(source, /disconnect:\s*\(\)\s*=>\s*void/)
+  assert.match(source, /const disconnect = useCallback\(\(\) => \{[\s\S]*setWallet\(''\)[\s\S]*setActivities\(\[\]\)/)
+  assert.match(source, /value=\{\{[\s\S]*connect, disconnect, selectProvider/)
+  assert.doesNotMatch(source, /wallet_revokePermissions|wallet_requestPermissions/)
+  assert.doesNotMatch(source, /(?:removeItem|clear)\(storageKey\)/)
+})
+
+test('manual disconnect blocks automatic account hydration until connect', async () => {
+  const source = await readFile(new URL('../components/TransactionManager.tsx', import.meta.url), 'utf8')
+  assert.match(source, /localStorage\.getItem\('priceguard:manually-disconnected'\) === 'true'/)
+  assert.match(source, /if \(!manuallyDisconnected\.current\) \{[\s\S]*method: 'eth_accounts'/)
+  assert.match(source, /const onAccounts[\s\S]*if \(manuallyDisconnected\.current\) return/)
+  assert.match(source, /const connect[\s\S]*manuallyDisconnected\.current = false[\s\S]*eth_requestAccounts/)
+  assert.match(source, /const disconnect[\s\S]*localStorage\.setItem\('priceguard:manually-disconnected', 'true'\)/)
+})
+
+test('wallet shell renders explicit connect, switch, address, and disconnect controls', async () => {
+  const source = await readFile(new URL('../components/AppShell.tsx', import.meta.url), 'utf8')
+  assert.match(source, /Wallet unavailable/)
+  assert.match(source, /Connect wallet/)
+  assert.match(source, /Switch to Bradbury/)
+  assert.match(source, /wallet-address/)
+  assert.match(source, />Disconnect<\/button>/)
+  assert.match(source, /type="button"/)
+  assert.doesNotMatch(source, /wrongNetwork \? switchNetwork\(\) : connect\(\)/)
+})
+
+test('standard injected-provider announcements drive wallet selection', async () => {
+  const manager = await readFile(new URL('../components/TransactionManager.tsx', import.meta.url), 'utf8')
+  const shell = await readFile(new URL('../components/AppShell.tsx', import.meta.url), 'utf8')
+  assert.match(manager, /eip6963:announceProvider/)
+  assert.match(manager, /eip6963:requestProvider/)
+  assert.doesNotMatch(manager, /window\.ethereum\.providers/)
+  assert.match(shell, /Select injected wallet provider/)
+})
+
+test('covenant list and authoring routes keep creation navigation visible', async () => {
+  const listPage = await readFile(new URL('../app/covenants/page.tsx', import.meta.url), 'utf8')
+  const newPage = await readFile(new URL('../app/covenants/new/page.tsx', import.meta.url), 'utf8')
+  const list = await readFile(new URL('../components/CovenantList.tsx', import.meta.url), 'utf8')
+  assert.match(listPage, /href="\/covenants\/new"[^>]*>Create covenant/)
+  assert.match(list, /href="\/covenants\/new"[^>]*>Create your first covenant/)
+  assert.match(newPage, /href="\/covenants"[^>]*>← Back to covenants/)
+})
+
+test('wallet controls retain mobile overflow and touch safeguards', async () => {
+  const css = await readFile(new URL('../app/globals.css', import.meta.url), 'utf8')
+  assert.match(css, /\.wallet-controls\s*\{[^}]*flex-wrap:\s*wrap/s)
+  assert.match(css, /@media \(max-width: 720px\)[\s\S]*\.wallet-area\s*\{[^}]*min-width:\s*0/s)
+  assert.match(css, /@media \(max-width: 720px\)[\s\S]*\.wallet-controls \.button, \.wallet-picker select\s*\{[^}]*min-height:\s*42px/s)
+})
+
+test('active public deployment docs and verification page contain no undeployed V2 claim', async () => {
+  const publicSources = await Promise.all([
+    '../README.md',
+    '../docs/BRADBURY_DEPLOYMENT.md',
+    '../docs/SECURITY.md',
+    '../docs/REVIEW_FIX.md',
+    '../app/about/verification/page.tsx',
+  ].map(path => readFile(new URL(path, import.meta.url), 'utf8')))
+  const combined = publicSources.join('\n')
+  assert.doesNotMatch(combined, /V2 (?:is|remains) (?:not deployed|undeployed)/i)
+  assert.match(combined, /0x7B939483E69ada6d2ca37acd3684182Ed141F35F/)
+  assert.match(combined, /full covenant[\s\S]{0,120}(?:remains unverified|has not yet been verified)/i)
+})

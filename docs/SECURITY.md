@@ -69,7 +69,8 @@ transaction hashes and inspect the Bradbury explorer.
 
 ## Deployment position
 
-Bradbury is a test network. V2 remains undeployed. Before claiming completion,
-run clean local tests, browser route/viewport QA, deploy the exact reviewed
-source to a new address, execute all seven writes with disposable testnet GEN
-for fees, and preserve explorer evidence.
+Bradbury is a test network. V2 is active at
+`0x7B939483E69ada6d2ca37acd3684182Ed141F35F`, and one market update is verified.
+Before claiming full lifecycle completion, run clean local tests, browser
+route/viewport QA, execute the remaining covenant writes with disposable
+testnet GEN for fees, and preserve explorer plus state-read evidence.

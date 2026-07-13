@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { PRICEGUARD_V2_ADDRESS } from '@/lib/config'
+import { CHAIN_ID, PRICEGUARD_V2_ADDRESS } from '@/lib/config'
 import { cursorsChanged, formatFixed, mergeCovenantPages, nextCovenantCursors } from '@/lib/priceguard-core.mjs'
 import { isCovenantPage, parseContractJson, type CovenantPage, type CovenantStatus } from '@/lib/types'
 import { useTransactions } from './TransactionManager'
@@ -14,7 +14,7 @@ type Row = CovenantPage['items'][number] & { role: Role }
 const emptyPage = (offset: number): CovenantPage => ({ items: [], offset, limit: 50, total: 0 })
 
 export function CovenantList() {
-  const { wallet, connect } = useTransactions()
+  const { wallet, chainId, connect, switchNetwork } = useTransactions()
   const [cursor, setCursor] = useState<Cursor>({ creatorOffset: 0, counterpartyOffset: 0 })
   const [history, setHistory] = useState<Cursor[]>([])
   const [creatorPage, setCreatorPage] = useState<CovenantPage>(emptyPage(0))
@@ -63,21 +63,22 @@ export function CovenantList() {
   const canNext = cursorsChanged(cursor, nextCursor)
 
   if (!PRICEGUARD_V2_ADDRESS) return <div className="panel empty">V2 is undeployed. Configure a new V2 address to read covenants.</div>
-  if (!wallet) return <div className="panel empty"><p>Connect an injected wallet to view your creator and counterparty indexes.</p><button className="button primary" onClick={() => void connect()}>Connect wallet</button></div>
+  if (!wallet) return <div className="panel empty"><p>Connect an injected wallet to view your creator and counterparty indexes.</p><button type="button" className="button primary" onClick={() => void connect()}>Connect wallet</button></div>
 
   return <section className="stack">
+    {chainId !== CHAIN_ID && <div className="panel network-warning" role="status"><div><strong>Bradbury network required</strong><p>Switch this wallet to chain {CHAIN_ID} before creating or updating covenants.</p></div><button type="button" className="button secondary" onClick={() => void switchNetwork()}>Switch to Bradbury</button></div>}
     <div className="toolbar">
       <label className="visually-group">Status
         <select value={filter} onChange={event => setFilter(event.target.value as 'ALL' | CovenantStatus)}>
           <option>ALL</option><option>PENDING_ACCEPTANCE</option><option>ACTIVE</option><option>TRIGGERED</option><option>CLOSED</option><option>EXPIRED</option><option>CANCELED</option>
         </select>
       </label>
-      <button className="button secondary" onClick={() => void load()} disabled={loading}>Refresh</button>
+      <button type="button" className="button secondary" onClick={() => void load()} disabled={loading}>Refresh</button>
     </div>
 
     {loading && <div className="panel skeleton">Loading covenant indexes…</div>}
     {error && <div className="panel danger-panel"><p>{error}</p><button className="button secondary" onClick={() => void load()}>Retry</button></div>}
-    {!loading && !error && visible.length === 0 && <div className="panel empty">No covenants match this page and filter.</div>}
+    {!loading && !error && visible.length === 0 && <div className="panel empty"><p>No covenants match this page and filter.</p><Link className="button primary" href="/covenants/new">Create your first covenant</Link></div>}
 
     {!loading && !error && visible.map(item => <Link className="panel list-row" href={`/covenants/${item.covenant_id}`} key={item.covenant_id}>
       <div><strong>{item.covenant_id}</strong><p className="muted">{item.role.replaceAll('_', ' ')} · {item.mode} · {item.condition_type} {formatFixed(item.threshold_low, item.decimals)}</p></div>
