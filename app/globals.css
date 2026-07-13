@@ -98,7 +98,9 @@ h3 { margin-bottom: 8px; font-size: 19px; letter-spacing: -.02em; }
 .status.danger { border-color: #613535; background: #2a1616; color: var(--danger); }
 .status.neutral { color: #a9b1af; background: var(--surface-2); }
 .market-price-row { display: flex; align-items: end; justify-content: space-between; gap: 18px; padding-bottom: 25px; border-bottom: 1px solid var(--border-soft); }
-.market-price-row strong { font: 600 clamp(28px, 4vw, 45px) ui-monospace, monospace; letter-spacing: -.06em; overflow-wrap: anywhere; }
+.market-price-row > div { min-width: 0; flex: 1 1 auto; }
+.market-price-row .muted { white-space: nowrap; }
+.market-price-row strong { flex: 0 0 auto; font: 600 clamp(28px, 3.2vw, 40px) ui-monospace, monospace; letter-spacing: -.05em; white-space: nowrap; overflow-wrap: normal; word-break: normal; }
 .metric-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 22px; }
 .metric-grid div { min-width: 0; display: grid; gap: 5px; }
 .metric-grid span { color: var(--muted); font-size: 10px; }
@@ -205,6 +207,7 @@ footer p { margin: 0; }
   .policy-grid { grid-template-columns: 1fr 1fr; }
   .metric-grid { grid-template-columns: 1fr 1fr; }
   .market-price-row { align-items: flex-start; flex-direction: column; }
+  .market-price-row .muted { white-space: normal; }
   .source-list > div { grid-template-columns: 1fr; }
   .source-list small { grid-column: 1; }
   .table-row { grid-template-columns: 1fr; gap: 4px; }

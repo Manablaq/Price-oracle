@@ -49,7 +49,13 @@ export async function GET() {
       const statsResult = parseContractJson(statsRaw)
       if (!isMarketResult(marketResult)) throw new Error('Malformed V2 market response')
       if (!isProtocolStats(statsResult)) throw new Error('Malformed V2 protocol statistics')
-      market = marketResult.found ? marketResult : null
+      if (marketResult.found) {
+        const { found, ...snapshot } = marketResult
+        void found
+        market = snapshot
+      } else {
+        market = null
+      }
       stats = statsResult
     } catch (caught) {
       error = caught instanceof Error ? caught.message : 'V2 state unavailable'
