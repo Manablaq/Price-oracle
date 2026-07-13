@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import {
   actionAllowed,
@@ -295,10 +295,19 @@ test('explicit Bradbury switching uses injected-provider RPC and adds only on co
 })
 
 test('project application code contains no MetaMask Snap RPC methods', () => {
-  const root = new URL('..', import.meta.url)
-  const paths = execFileSync('rg', ['--files', 'components', 'lib', 'app'], { cwd: root, encoding: 'utf8' })
-    .trim().split('\n').filter(path => /\.(?:ts|tsx|js|jsx|mjs)$/.test(path))
-  const combined = paths.map(path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8')).join('\n')
+  const sourcePattern = /\.(?:ts|tsx|js|jsx|mjs)$/
+  const sourceFiles = ['components', 'lib', 'app'].flatMap((directory) => {
+    const walk = (path) => readdirSync(path, { withFileTypes: true })
+      .sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0)
+      .flatMap(entry => {
+        const entryPath = new URL(entry.name, path)
+        if (entry.isDirectory()) return walk(new URL(`${entry.name}/`, path))
+        return entry.isFile() && sourcePattern.test(entry.name) ? [entryPath] : []
+      })
+
+    return walk(new URL(`../${directory}/`, import.meta.url))
+  })
+  const combined = sourceFiles.map(path => readFileSync(path, 'utf8')).join('\n')
   for (const method of ['wallet_getSnaps', 'wallet_requestSnaps', 'wallet_invokeSnap', 'wallet_snap']) {
     assert.doesNotMatch(combined, new RegExp(method))
   }
