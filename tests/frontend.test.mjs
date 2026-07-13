@@ -379,28 +379,93 @@ test('manual disconnect blocks automatic account hydration until connect', async
   assert.match(source, /localStorage\.getItem\('priceguard:manually-disconnected'\) === 'true'/)
   assert.match(source, /if \(!manuallyDisconnected\.current\) \{[\s\S]*method: 'eth_accounts'/)
   assert.match(source, /const onAccounts[\s\S]*if \(manuallyDisconnected\.current\) return/)
-  assert.match(source, /const connect[\s\S]*manuallyDisconnected\.current = false[\s\S]*eth_requestAccounts/)
+  assert.match(source, /const connect[\s\S]*eth_requestAccounts[\s\S]*manuallyDisconnected\.current = false[\s\S]*removeItem\('priceguard:manually-disconnected'\)/)
   assert.match(source, /const disconnect[\s\S]*localStorage\.setItem\('priceguard:manually-disconnected', 'true'\)/)
 })
 
-test('wallet shell renders explicit connect, switch, address, and disconnect controls', async () => {
+test('wallet shell uses one disconnected trigger and one connected account trigger', async () => {
   const source = await readFile(new URL('../components/AppShell.tsx', import.meta.url), 'utf8')
-  assert.match(source, /Wallet unavailable/)
-  assert.match(source, /Connect wallet/)
-  assert.match(source, /Switch to Bradbury/)
-  assert.match(source, /wallet-address/)
-  assert.match(source, />Disconnect<\/button>/)
-  assert.match(source, /type="button"/)
-  assert.doesNotMatch(source, /wrongNetwork \? switchNetwork\(\) : connect\(\)/)
+  assert.match(source, /className="wallet-connect-trigger"[\s\S]{0,180}<span>Connect wallet<\/span>/)
+  assert.match(source, /className=\{`account-trigger/)
+  assert.match(source, /aria-label=\{`\$\{wrongNetwork[\s\S]*\$\{wallet\}[\s\S]*\$\{selectedProvider\?\.name/)
+  assert.match(source, /aria-expanded=\{accountOpen\}/)
+  assert.match(source, /aria-haspopup="menu"/)
+  assert.doesNotMatch(source, /<select|wallet-picker|wallet-controls|wallet-address/)
+  assert.doesNotMatch(source, />Wallet<\/span>/)
 })
 
-test('standard injected-provider announcements drive wallet selection', async () => {
+test('disconnect is an account-menu action rather than a permanent header peer', async () => {
+  const source = await readFile(new URL('../components/AppShell.tsx', import.meta.url), 'utf8')
+  assert.match(source, /id="wallet-account-menu"[\s\S]*role="menu"/)
+  assert.match(source, /className="disconnect-action"[\s\S]*Disconnect from PriceGuard/)
+  assert.match(source, /closeAccountMenu\(\); disconnect\(\)/)
+  assert.match(source, /does not revoke this site&apos;s permission inside your wallet extension/)
+})
+
+test('standard EIP-6963 announcements and fallback drive stable provider metadata', async () => {
   const manager = await readFile(new URL('../components/TransactionManager.tsx', import.meta.url), 'utf8')
   const shell = await readFile(new URL('../components/AppShell.tsx', import.meta.url), 'utf8')
   assert.match(manager, /eip6963:announceProvider/)
   assert.match(manager, /eip6963:requestProvider/)
+  assert.match(manager, /const legacyProvider = window\.ethereum/)
+  assert.match(manager, /uuid\?: unknown; name\?: unknown; icon\?: unknown; rdns\?: unknown/)
+  assert.match(manager, /announced = new Map/)
+  assert.match(manager, /safeProviderIcon/)
+  assert.match(manager, /data:image/)
+  assert.match(manager, /base64/)
   assert.doesNotMatch(manager, /window\.ethereum\.providers/)
-  assert.match(shell, /Select injected wallet provider/)
+  assert.match(shell, /injectedProviders\.map\(provider => <button/)
+  assert.match(shell, /provider-option/)
+  assert.match(shell, /Detected/)
+})
+
+test('provider selection and connection resolve the same deterministic provider', async () => {
+  const manager = await readFile(new URL('../components/TransactionManager.tsx', import.meta.url), 'utf8')
+  const shell = await readFile(new URL('../components/AppShell.tsx', import.meta.url), 'utf8')
+  assert.match(manager, /connect: \(providerId\?: string\) => Promise<void>/)
+  assert.match(manager, /const option = providerId[\s\S]*options\.find\(item => item\.id === providerId\)/)
+  assert.match(manager, /option\.provider\.request\(\{ method: 'eth_requestAccounts' \}\)/)
+  assert.match(shell, /selectProvider\(providerId\)[\s\S]*await connect\(providerId\)/)
+  assert.doesNotMatch(shell, /selectProvider\(providerId\)[\s\S]{0,80}await connect\(\)/)
+})
+
+test('connect dialog lists providers and exposes accessible close behavior', async () => {
+  const source = await readFile(new URL('../components/AppShell.tsx', import.meta.url), 'utf8')
+  assert.match(source, /role="dialog" aria-modal="true"/)
+  assert.match(source, /aria-labelledby="connect-wallet-title" aria-describedby="connect-wallet-description"/)
+  assert.match(source, /id="connect-wallet-title">Connect wallet/)
+  assert.match(source, /No injected wallet detected/)
+  assert.match(source, /event\.key === 'Escape'/)
+  assert.match(source, /event\.target === event\.currentTarget/)
+  assert.match(source, /modalReturnFocusRef\.current/)
+  assert.match(source, /document\.body\.style\.overflow = 'hidden'/)
+})
+
+test('account menu includes identity, network, copy, switch, and disconnect actions', async () => {
+  const source = await readFile(new URL('../components/AppShell.tsx', import.meta.url), 'utf8')
+  assert.match(source, /Connected with/)
+  assert.match(source, /<code title=\{wallet\}>\{wallet\}<\/code>/)
+  assert.match(source, /Current network/)
+  assert.match(source, /Copy address/)
+  assert.match(source, /wrongNetwork && <button[\s\S]*Switch to Bradbury/)
+  assert.match(source, /Disconnect from PriceGuard/)
+  assert.match(source, /navigator\.clipboard\?\.writeText/)
+  assert.match(source, /Copied/)
+  assert.match(source, /document\.addEventListener\('pointerdown'/)
+  assert.match(source, /\['ArrowDown', 'ArrowUp', 'Home', 'End'\]/)
+})
+
+test('wallet errors are normalized and unsupported wallet APIs stay absent', async () => {
+  const sources = await Promise.all([
+    '../components/AppShell.tsx',
+    '../components/TransactionManager.tsx',
+    '../package.json',
+  ].map(path => readFile(new URL(path, import.meta.url), 'utf8')))
+  const combined = sources.join('\n')
+  assert.match(combined, /Connection request was declined in your wallet/)
+  assert.match(combined, /Network switch was declined in your wallet/)
+  assert.match(combined, /wallet is no longer available/)
+  assert.doesNotMatch(combined, /WalletConnect|wallet_revokePermissions|wallet_requestPermissions|dangerouslySetInnerHTML/)
 })
 
 test('covenant list and authoring routes keep creation navigation visible', async () => {
@@ -412,11 +477,15 @@ test('covenant list and authoring routes keep creation navigation visible', asyn
   assert.match(newPage, /href="\/covenants"[^>]*>← Back to covenants/)
 })
 
-test('wallet controls retain mobile overflow and touch safeguards', async () => {
+test('wallet surfaces retain mobile containment and touch safeguards', async () => {
   const css = await readFile(new URL('../app/globals.css', import.meta.url), 'utf8')
-  assert.match(css, /\.wallet-controls\s*\{[^}]*flex-wrap:\s*wrap/s)
   assert.match(css, /@media \(max-width: 720px\)[\s\S]*\.wallet-area\s*\{[^}]*min-width:\s*0/s)
-  assert.match(css, /@media \(max-width: 720px\)[\s\S]*\.wallet-controls \.button, \.wallet-picker select\s*\{[^}]*min-height:\s*42px/s)
+  assert.match(css, /\.wallet-connect-trigger, \.account-trigger\s*\{[^}]*min-height:\s*42px/s)
+  assert.match(css, /\.account-actions button\s*\{[^}]*min-height:\s*42px/s)
+  assert.match(css, /\.dialog-close\s*\{[^}]*width:\s*42px;[^}]*height:\s*42px/s)
+  assert.match(css, /\.account-menu\s*\{[^}]*width:\s*min\(360px, calc\(100vw - 28px\)\)/s)
+  assert.match(css, /\.wallet-dialog\s*\{[^}]*width:\s*min\(100%, 480px\)[^}]*max-height:\s*calc\(100dvh - 40px\)/s)
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*transition-duration:\s*\.01ms/s)
 })
 
 test('active public deployment docs and verification page contain no undeployed V2 claim', async () => {
