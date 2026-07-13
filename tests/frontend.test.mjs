@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import {
   actionAllowed,
@@ -207,6 +208,67 @@ test('Activity persistence occurs only after a valid returned transaction hash',
   const persistence = source.indexOf('storeActivities(', activity)
   assert.ok(validation >= 0 && activity > validation && persistence > activity)
   assert.match(source.slice(validation, activity), /isValidTransactionHash\(returnedHash\)/)
+})
+
+test('submission uses the selected provider without a Snap-dependent client connect', async () => {
+  const source = await readFile(new URL('../components/TransactionManager.tsx', import.meta.url), 'utf8')
+  const submitStart = source.indexOf('const submit = useCallback')
+  const submitEnd = source.indexOf('const injectedProviders', submitStart)
+  const submit = source.slice(submitStart, submitEnd)
+
+  assert.ok(submitStart >= 0 && submitEnd > submitStart)
+  assert.doesNotMatch(submit, /client\.connect\(['"]testnetBradbury['"]\)/)
+  assert.match(source, /createClient\(\{[\s\S]*chain: testnetBradbury,[\s\S]*account: wallet as `0x\$\{string\}`,[\s\S]*provider,[\s\S]*\}\)/)
+  assert.match(submit, /createWriteClient\(submissionContext\.provider, submissionContext\.wallet\)/)
+})
+
+test('submit re-verifies Bradbury and the active account immediately before writing', async () => {
+  const source = await readFile(new URL('../components/TransactionManager.tsx', import.meta.url), 'utf8')
+  const submitStart = source.indexOf('const submit = useCallback')
+  const submitEnd = source.indexOf('const injectedProviders', submitStart)
+  const submit = source.slice(submitStart, submitEnd)
+  const verification = submit.indexOf("runSubmissionStage('NETWORK_VERIFICATION'")
+  const chainCheck = submit.indexOf("method: 'eth_chainId'", verification)
+  const accountCheck = submit.indexOf("method: 'eth_accounts'", chainCheck)
+  const accountMatch = submit.indexOf('activeAccount.toLowerCase() !== submissionContext.wallet.toLowerCase()', accountCheck)
+  const write = submit.indexOf('writeClient.writeContract', accountMatch)
+
+  assert.ok(verification >= 0 && chainCheck > verification && accountCheck > chainCheck && accountMatch > accountCheck && write > accountMatch)
+  assert.match(submit.slice(chainCheck, write), /currentChain !== CHAIN_ID/)
+  assert.match(submit.slice(accountCheck, write), /Reconnect the PriceGuard wallet before submitting/)
+})
+
+test('explicit Bradbury switching uses injected-provider RPC and adds only on code 4902', async () => {
+  const [manager, config] = await Promise.all([
+    readFile(new URL('../components/TransactionManager.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../lib/config.ts', import.meta.url), 'utf8'),
+  ])
+  const switchStart = manager.indexOf('const switchNetwork = useCallback')
+  const switchEnd = manager.indexOf('\n  useEffect(', switchStart)
+  const switchNetwork = manager.slice(switchStart, switchEnd)
+
+  assert.ok(switchStart >= 0 && switchEnd > switchStart)
+  assert.doesNotMatch(switchNetwork, /createWriteClient|client\.connect/)
+  assert.match(switchNetwork, /method: 'wallet_switchEthereumChain'[\s\S]*chainId: BRADBURY_CHAIN_ID_HEX/)
+  assert.match(switchNetwork, /normalizeUnknownError\(error\)\.code !== '4902'\) throw error[\s\S]*method: 'wallet_addEthereumChain'/)
+  assert.equal((switchNetwork.match(/method: 'wallet_addEthereumChain'/g) ?? []).length, 1)
+  assert.equal((switchNetwork.match(/method: 'wallet_switchEthereumChain'/g) ?? []).length, 2)
+
+  assert.match(config, /BRADBURY_CHAIN_ID_HEX = '0x107d'/)
+  assert.match(config, /chainName: 'GenLayer Bradbury'/)
+  assert.match(config, /name: 'GEN',[\s\S]*symbol: 'GEN',[\s\S]*decimals: 18/)
+  assert.match(config, /rpcUrls: \['https:\/\/rpc-bradbury\.genlayer\.com'\]/)
+  assert.match(config, /blockExplorerUrls: \['https:\/\/explorer-bradbury\.genlayer\.com'\]/)
+})
+
+test('project application code contains no MetaMask Snap RPC methods', () => {
+  const root = new URL('..', import.meta.url)
+  const paths = execFileSync('rg', ['--files', 'components', 'lib', 'app'], { cwd: root, encoding: 'utf8' })
+    .trim().split('\n').filter(path => /\.(?:ts|tsx|js|jsx|mjs)$/.test(path))
+  const combined = paths.map(path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8')).join('\n')
+  for (const method of ['wallet_getSnaps', 'wallet_requestSnaps', 'wallet_invokeSnap', 'wallet_snap']) {
+    assert.doesNotMatch(combined, new RegExp(method))
+  }
 })
 
 test('failed covenant submission preserves controlled form values and restores retry controls', async () => {
@@ -584,6 +646,8 @@ test('wallet errors are normalized and unsupported wallet APIs stay absent', asy
   const combined = sources.join('\n')
   assert.match(combined, /Connection request was declined in your wallet/)
   assert.match(combined, /Network switch was declined in your wallet/)
+  assert.match(combined, /This wallet does not support automatic network switching/)
+  assert.match(combined, /\(code \$\{code\}\)/)
   assert.match(combined, /wallet is no longer available/)
   assert.doesNotMatch(combined, /WalletConnect|wallet_revokePermissions|wallet_requestPermissions|dangerouslySetInnerHTML/)
 })

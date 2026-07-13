@@ -4,6 +4,18 @@ export const PRICEGUARD_V2_ADDRESS = /^0x[0-9a-fA-F]{40}$/.test(configuredV2)
   : null
 
 export const CHAIN_ID = 4221
+export const BRADBURY_CHAIN_ID_HEX = '0x107d'
+export const BRADBURY_NETWORK = {
+  chainId: BRADBURY_CHAIN_ID_HEX,
+  chainName: 'GenLayer Bradbury',
+  nativeCurrency: {
+    name: 'GEN',
+    symbol: 'GEN',
+    decimals: 18,
+  },
+  rpcUrls: ['https://rpc-bradbury.genlayer.com'],
+  blockExplorerUrls: ['https://explorer-bradbury.genlayer.com'],
+} as const
 export const EXPLORER_URL = 'https://explorer-bradbury.genlayer.com'
 export const POLICY = {
   symbol: 'BTC/USD',
