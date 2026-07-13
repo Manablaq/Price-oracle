@@ -1,4 +1,4 @@
-# Historical vault design removed
+# Deprecated historical vault design
 
 The old custodial vault concept is not part of PriceGuard Covenant V2. The
 active contract has no payable method, funded amount, beneficiary claim,

@@ -45,11 +45,13 @@ import {
   SubmissionStageError,
   submissionErrorTitle,
 } from '../lib/submission-errors.ts'
+import { checkPostState } from '../lib/post-state.ts'
 
 const addressA = '0x1111111111111111111111111111111111111111'
 const addressB = '0x2222222222222222222222222222222222222222'
 const covenantIdA = `cov_${'a'.repeat(48)}`
 const attestationIdA = `att_${'b'.repeat(48)}`
+const transactionHash = `0x${'1'.repeat(64)}`
 
 const market = () => ({
   found: true,
@@ -144,6 +146,37 @@ const personalArgs = (overrides = {}) => {
     values.low, values.high, values.validFrom, values.expiry, values.confidence,
     values.spread, values.memo, values.reference, values.revision]
 }
+
+const activity = (overrides = {}) => ({
+  hash: transactionHash,
+  chainId: 4221,
+  contract: addressA,
+  wallet: addressA,
+  action: 'create',
+  functionName: 'create_covenant',
+  phase: 'CONFIRMED',
+  submittedAt: 1,
+  updatedAt: 2,
+  terminal: true,
+  expectedCovenantId: covenantIdA,
+  submittedCreateTerms: {
+    clientRequestId: 'request_1',
+    mode: 'PERSONAL',
+    counterparty: ZERO_ADDRESS,
+    symbol: 'BTC/USD',
+    conditionType: 'BELOW',
+    thresholdLowInput: '70000',
+    thresholdHighInput: '',
+    validFrom: 0,
+    expiry: 1783947600,
+    minimumConfidence: 'HIGH',
+    maximumSpreadBps: 50,
+    memo: '',
+    externalReferenceHash: '',
+    revisionOf: '',
+  },
+  ...overrides,
+})
 
 test('unknown errors preserve safe messages from supported throw shapes', () => {
   assert.equal(normalizeUnknownError(new Error('Native failure')).message, 'Native failure')
@@ -334,13 +367,66 @@ test('marketState distinguishes missing, stale, breaker, and verified snapshots'
 
 test('transaction classification follows GenLayer finality and execution result', () => {
   assert.deepEqual(classifyTransaction({ statusName: 'ACCEPTED', resultName: 'AGREE', txExecutionResultName: 'FINISHED_WITH_RETURN' }), { phase: 'CONFIRMATION', terminal: false })
+  assert.deepEqual(classifyTransaction({ statusName: 'READY_TO_FINALIZE' }), { phase: 'CONFIRMATION', terminal: false })
   assert.deepEqual(classifyTransaction({ statusName: 'FINALIZED', resultName: 'AGREE', txExecutionResultName: 'FINISHED_WITH_RETURN' }), { phase: 'CONFIRMED', terminal: true })
   assert.deepEqual(classifyTransaction({ statusName: 'FINALIZED', resultName: 'MAJORITY_AGREE', txExecutionResultName: 'FINISHED_WITH_RETURN' }), { phase: 'CONFIRMED', terminal: true })
   assert.deepEqual(classifyTransaction({ statusName: 'FINALIZED', txExecutionResultName: 'FINISHED_WITH_RETURN' }), { phase: 'CONFIRMED', terminal: true })
   assert.equal(classifyTransaction({ statusName: 'FINALIZED', txExecutionResultName: 'FINISHED_WITH_ERROR' }).phase, 'EXECUTION_FAILED')
+  assert.deepEqual(classifyTransaction({ statusName: 'CANCELED' }), { phase: 'CANCELED', terminal: true })
   assert.equal(classifyTransaction({ statusName: 'UNDETERMINED' }).phase, 'UNDETERMINED')
   assert.equal(classifyTransaction({ statusName: 'VALIDATORS_TIMEOUT' }).terminal, true)
+  assert.equal(classifyTransaction({ statusName: 'LEADER_TIMEOUT' }).terminal, true)
   assert.equal(classifyTransaction({ statusName: 'FINALIZED', resultName: 'NO_MAJORITY', txExecutionResultName: 'FINISHED_WITH_RETURN' }).phase, 'UNDETERMINED')
+  assert.equal(classifyTransaction({ statusName: 'FINALIZED', resultName: 'MAJORITY_DISAGREE' }).phase, 'UNDETERMINED')
+  assert.equal(classifyTransaction({ statusName: 'FINALIZED', resultName: 'DISAGREE' }).phase, 'EXECUTION_FAILED')
+  assert.deepEqual(classifyTransaction({ statusName: 'UNKNOWN' }), { phase: 'UNKNOWN_RETRYABLE', terminal: false })
+})
+
+test('checkPostState confirms the exact expected created covenant', async () => {
+  const client = { readContract: async () => ({ found: true, ...covenant() }) }
+  const result = await checkPostState(client, addressA, activity())
+  assert.deepEqual(result, {
+    stateCheck: 'MATCHED',
+    stateCheckMessage: `Created covenant ${covenantIdA} is readable.`,
+  })
+})
+
+test('checkPostState reports missing and malformed covenant responses as mismatched', async () => {
+  const missing = await checkPostState(
+    { readContract: async () => ({ found: false, covenant_id: covenantIdA }) },
+    addressA,
+    activity(),
+  )
+  assert.equal(missing.stateCheck, 'MISMATCHED')
+
+  const malformed = await checkPostState(
+    { readContract: async () => '{"found":true,"unexpected":true}' },
+    addressA,
+    activity(),
+  )
+  assert.equal(malformed.stateCheck, 'MISMATCHED')
+})
+
+test('checkPostState reports unavailable reads without changing finality fields', async () => {
+  const result = await checkPostState(
+    { readContract: async () => { throw new Error('Bradbury read unavailable') } },
+    addressA,
+    activity(),
+  )
+  assert.deepEqual(result, {
+    stateCheck: 'UNAVAILABLE',
+    stateCheckMessage: 'Bradbury read unavailable',
+  })
+  assert.equal(Object.hasOwn(result, 'phase'), false)
+  assert.equal(Object.hasOwn(result, 'terminal'), false)
+})
+
+test('supplementary state reads run only after protocol finality is confirmed', async () => {
+  const source = await readFile(new URL('../components/TransactionManager.tsx', import.meta.url), 'utf8')
+  assert.match(source, /if \(classification\.phase === 'CONFIRMED'\) stateCheckUpdate = await checkPostState/)
+  assert.match(source, /\.\.\.classification,[\s\S]*\.\.\.stateCheckUpdate/)
+  const nonfinal = classifyTransaction({ statusName: 'ACCEPTED', txExecutionResultName: 'FINISHED_WITH_RETURN' })
+  assert.deepEqual(nonfinal, { phase: 'CONFIRMATION', terminal: false })
 })
 
 test('activity namespace and merge isolate accounts and keep the newest record', () => {
