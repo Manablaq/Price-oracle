@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import {
   actionAllowed,
@@ -35,6 +36,14 @@ import {
   isProtocolStats,
   parseContractJson,
 } from '../lib/types.ts'
+import {
+  isValidTransactionHash,
+  normalizeUnknownError,
+  SUBMISSION_STAGE_LABELS,
+  SUBMISSION_STAGES,
+  SubmissionStageError,
+  submissionErrorTitle,
+} from '../lib/submission-errors.ts'
 
 const addressA = '0x1111111111111111111111111111111111111111'
 const addressB = '0x2222222222222222222222222222222222222222'
@@ -134,6 +143,117 @@ const personalArgs = (overrides = {}) => {
     values.low, values.high, values.validFrom, values.expiry, values.confidence,
     values.spread, values.memo, values.reference, values.revision]
 }
+
+test('unknown errors preserve safe messages from supported throw shapes', () => {
+  assert.equal(normalizeUnknownError(new Error('Native failure')).message, 'Native failure')
+  assert.equal(normalizeUnknownError('String failure').message, 'String failure')
+  assert.equal(normalizeUnknownError({ message: 'Object failure' }).message, 'Object failure')
+  assert.deepEqual(normalizeUnknownError({ shortMessage: 'Wallet rejected', code: 4001 }), {
+    message: 'Wallet rejected',
+    code: '4001',
+  })
+  assert.equal(normalizeUnknownError({ error: { message: 'Nested RPC failure' } }).message, 'Nested RPC failure')
+  assert.equal(normalizeUnknownError({ cause: { cause: new Error('Root cause') } }).message, 'Root cause')
+})
+
+test('unknown error normalization is circular-safe, bounded, and redacts secrets', () => {
+  const circular = { message: 'Circular failure' }
+  circular.cause = circular
+  assert.equal(normalizeUnknownError(circular).message, 'Circular failure')
+
+  const huge = normalizeUnknownError({ message: 'x'.repeat(20_000) }).message
+  assert.ok(huge.length <= 480)
+  assert.match(huge, /…$/)
+
+  const secret = '0x' + 'a'.repeat(130)
+  const normalized = normalizeUnknownError({
+    message: `Request failed; privateKey=${secret}; signature=${secret}; rawTransaction=${secret}`,
+    privateKey: secret,
+    signature: secret,
+    request: { params: [secret] },
+  })
+  const displayed = JSON.stringify(normalized)
+  assert.doesNotMatch(displayed, new RegExp(secret, 'i'))
+  assert.doesNotMatch(displayed, /"request"|"privateKey"|"signature"/)
+  assert.match(displayed, /\[redacted\]/)
+})
+
+test('submission stages have stable labels and typed stage errors', () => {
+  assert.deepEqual(SUBMISSION_STAGES, [
+    'PREPARATION',
+    'CLIENT_INITIALIZATION',
+    'NETWORK_VERIFICATION',
+    'WALLET_SUBMISSION',
+    'HASH_VALIDATION',
+  ])
+  assert.equal(SUBMISSION_STAGE_LABELS.WALLET_SUBMISSION, 'Wallet submission')
+  assert.equal(submissionErrorTitle('WALLET_SUBMISSION'), 'Wallet submission failed')
+  const cause = { shortMessage: 'User rejected', code: 4001 }
+  const error = new SubmissionStageError('WALLET_SUBMISSION', cause)
+  assert.equal(error.stage, 'WALLET_SUBMISSION')
+  assert.equal(error.safe.code, '4001')
+  assert.equal(error.cause, cause)
+})
+
+test('Activity persistence occurs only after a valid returned transaction hash', async () => {
+  assert.equal(isValidTransactionHash(`0x${'a'.repeat(64)}`), true)
+  for (const invalid of [undefined, null, '', '0x1234', `0x${'g'.repeat(64)}`, { hash: `0x${'a'.repeat(64)}` }]) {
+    assert.equal(isValidTransactionHash(invalid), false)
+  }
+
+  const source = await readFile(new URL('../components/TransactionManager.tsx', import.meta.url), 'utf8')
+  const validation = source.indexOf("runSubmissionStage('HASH_VALIDATION'")
+  const activity = source.indexOf('const activity: Activity', validation)
+  const persistence = source.indexOf('storeActivities(', activity)
+  assert.ok(validation >= 0 && activity > validation && persistence > activity)
+  assert.match(source.slice(validation, activity), /isValidTransactionHash\(returnedHash\)/)
+})
+
+test('failed covenant submission preserves controlled form values and restores retry controls', async () => {
+  const [form, button] = await Promise.all([
+    readFile(new URL('../components/NewCovenantForm.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../components/WriteButton.tsx', import.meta.url), 'utf8'),
+  ])
+  for (const value of ['request', 'mode', 'counterparty', 'condition', 'low', 'high', 'validFrom', 'expiry', 'spread', 'memo', 'reference', 'revision']) {
+    assert.match(form, new RegExp(`value=\\{${value}\\}`), value)
+  }
+  assert.doesNotMatch(form, /await submit[\s\S]{0,500}set(?:Request|Mode|Counterparty|Condition|Low|High|ValidFrom|Expiry|Spread|Memo|Reference|Revision)/)
+  assert.match(button, /const submissionLock = useRef\(false\)/)
+  assert.match(button, /if \(submissionLock\.current\) return/)
+  assert.match(button, /finally \{[\s\S]*submissionLock\.current = false[\s\S]*setSubmitting\(false\)/)
+  assert.match(button, /disabled=\{disabled \|\| submitting \|\| pending/)
+  assert.doesNotMatch(button, /autoSubmit|resubmit|setTimeout\([^)]*click/)
+})
+
+test('submission error UI is safe, staged, accessible, and explicit about Activity', async () => {
+  const [source, normalizationSource] = await Promise.all([
+    readFile(new URL('../components/WriteButton.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../lib/submission-errors.ts', import.meta.url), 'utf8'),
+  ])
+  const logStart = source.indexOf("console.error('[PriceGuard submission]'")
+  const logEnd = source.indexOf('\n        })', logStart)
+  const logCall = source.slice(logStart, logEnd)
+  assert.ok(logStart >= 0 && logEnd > logStart)
+  assert.match(logCall, /stage: caught\.stage/)
+  assert.match(logCall, /message: caught\.safe\.message/)
+  assert.match(logCall, /caught\.safe\.code/)
+  assert.match(logCall, /caught\.safe\.technicalDetails/)
+  assert.doesNotMatch(logCall, /caught\.cause|\berror\s*:/)
+  assert.doesNotMatch(`${source}\n${normalizationSource}`, /JSON\.stringify\((?:caught|error|cause|caught\.cause)/)
+  assert.match(source, /Stage: <code>\{error\.stage\}<\/code>/)
+  assert.match(source, /Provider\/RPC error code:/)
+  assert.match(source, /No transaction hash was returned, so nothing was added to Activity\./)
+  assert.match(source, /<details>[\s\S]*<summary>Technical details<\/summary>/)
+  assert.match(source, /role="alert"/)
+  assert.doesNotMatch(source, /dangerouslySetInnerHTML/)
+})
+
+test('PriceGuard contract has no working-tree diff', () => {
+  assert.doesNotThrow(() => execFileSync('git', ['diff', '--exit-code', 'HEAD', '--', 'contracts/priceguard.py'], {
+    cwd: new URL('..', import.meta.url),
+    stdio: 'pipe',
+  }))
+})
 
 test('formatFixed renders integer fixed-point values without floating point', () => {
   assert.equal(formatFixed('6283155', 2, { prefix: '$', trim: false }), '$62,831.55')

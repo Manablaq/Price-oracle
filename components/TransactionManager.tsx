@@ -18,6 +18,7 @@ import {
   type Activity,
   type CreateTerms,
 } from '@/lib/types'
+import { isValidTransactionHash, SubmissionStageError, type SubmissionStage } from '@/lib/submission-errors'
 
 type WriteArg = string | number | bigint | boolean
 
@@ -71,7 +72,16 @@ type WriteClient = ReadClient & {
     functionName: string
     args: WriteArg[]
     value: bigint
-  }) => Promise<`0x${string}`>
+  }) => Promise<unknown>
+}
+
+async function runSubmissionStage<T>(stage: SubmissionStage, operation: () => Promise<T> | T): Promise<T> {
+  try {
+    return await operation()
+  } catch (error) {
+    if (error instanceof SubmissionStageError) throw error
+    throw new SubmissionStageError(stage, error)
+  }
 }
 
 const Context = createContext<ContextValue>({
@@ -438,28 +448,46 @@ export function TransactionManager({ children }: { children: React.ReactNode }) 
   ), [activities])
 
   const submit = useCallback(async (spec: SubmitSpec) => {
-    if (!PRICEGUARD_V2_ADDRESS) throw new Error('PriceGuard V2 is not deployed or configured.')
-    if (!wallet || !selectedProvider) throw new Error('Connect an injected wallet first.')
-    if (chainId !== CHAIN_ID) throw new Error('Switch to Bradbury (chain 4221) before writing.')
-    if (isPending(spec.action, spec.covenantId)) throw new Error('This action already has an unfinished transaction. It will not be resubmitted.')
+    const submissionContext = await runSubmissionStage('PREPARATION', () => {
+      if (!PRICEGUARD_V2_ADDRESS) throw new Error('PriceGuard V2 is not deployed or configured.')
+      if (!wallet || !selectedProvider) throw new Error('Connect an injected wallet first.')
+      return { address: PRICEGUARD_V2_ADDRESS, provider: selectedProvider }
+    })
+    await runSubmissionStage('NETWORK_VERIFICATION', () => {
+      if (chainId !== CHAIN_ID) throw new Error('Switch to Bradbury (chain 4221) before writing.')
+    })
+    await runSubmissionStage('PREPARATION', () => {
+      if (isPending(spec.action, spec.covenantId)) throw new Error('This action already has an unfinished transaction. It will not be resubmitted.')
+    })
 
-    const readClient = await createReadClient()
-    const prepared = await prepareSubmission(readClient, PRICEGUARD_V2_ADDRESS, spec, wallet)
-    const writeClient = await createWriteClient(selectedProvider, wallet)
-    await writeClient.connect('testnetBradbury')
-    const currentChain = normalizeChainId(await selectedProvider.request({ method: 'eth_chainId' }))
-    if (currentChain !== CHAIN_ID) throw new Error('Wallet did not switch to Bradbury chain 4221.')
+    const prepared = await runSubmissionStage('PREPARATION', async () => {
+      const readClient = await createReadClient()
+      return prepareSubmission(readClient, submissionContext.address, spec, wallet)
+    })
+    const writeClient = await runSubmissionStage('CLIENT_INITIALIZATION', async () => {
+      const client = await createWriteClient(submissionContext.provider, wallet)
+      await client.connect('testnetBradbury')
+      return client
+    })
+    await runSubmissionStage('NETWORK_VERIFICATION', async () => {
+      const currentChain = normalizeChainId(await submissionContext.provider.request({ method: 'eth_chainId' }))
+      if (currentChain !== CHAIN_ID) throw new Error('Wallet did not switch to Bradbury chain 4221.')
+    })
 
-    const hash = await writeClient.writeContract({
-      address: PRICEGUARD_V2_ADDRESS,
+    const returnedHash = await runSubmissionStage('WALLET_SUBMISSION', () => writeClient.writeContract({
+      address: submissionContext.address,
       functionName: spec.functionName,
       args: spec.args,
       value: 0n,
+    }))
+    const hash = await runSubmissionStage('HASH_VALIDATION', () => {
+      if (!isValidTransactionHash(returnedHash)) throw new Error('The wallet or SDK did not return a valid transaction hash.')
+      return returnedHash
     })
     const activity: Activity = {
       hash,
       chainId: CHAIN_ID,
-      contract: PRICEGUARD_V2_ADDRESS,
+      contract: submissionContext.address,
       wallet,
       action: spec.action,
       functionName: spec.functionName,

@@ -1,8 +1,18 @@
 'use client'
 
 import { CHAIN_ID, PRICEGUARD_V2_ADDRESS } from '@/lib/config'
-import { useState } from 'react'
+import {
+  isSubmissionStageError,
+  normalizeUnknownError,
+  SUBMISSION_STAGE_LABELS,
+  submissionErrorTitle,
+  type NormalizedUnknownError,
+  type SubmissionStage,
+} from '@/lib/submission-errors'
+import { useRef, useState } from 'react'
 import { useTransactions } from './TransactionManager'
+
+type SubmissionErrorView = NormalizedUnknownError & { stage: SubmissionStage; title: string }
 
 export function WriteButton({ action, functionName, args, covenantId, children, disabled = false }: {
   action: 'refresh' | 'create' | 'accept' | 'cancel' | 'evaluate' | 'expire' | 'acknowledge'
@@ -13,14 +23,16 @@ export function WriteButton({ action, functionName, args, covenantId, children, 
   disabled?: boolean
 }) {
   const { wallet, chainId, providerAvailable, connect, switchNetwork, submit, isPending } = useTransactions()
-  const [error, setError] = useState('')
+  const [error, setError] = useState<SubmissionErrorView | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const submissionLock = useRef(false)
   const pending = isPending(action, covenantId)
   const wrongNetwork = Boolean(wallet) && chainId !== CHAIN_ID
 
   const click = async () => {
-    if (submitting) return
-    setError('')
+    if (submissionLock.current) return
+    submissionLock.current = true
+    setError(null)
     setSubmitting(true)
     try {
       if (!providerAvailable) throw new Error('Install or enable an injected wallet first.')
@@ -28,8 +40,20 @@ export function WriteButton({ action, functionName, args, covenantId, children, 
       if (wrongNetwork) { await switchNetwork(); return }
       await submit({ action, functionName, args, covenantId })
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Submission failed')
+      if (isSubmissionStageError(caught)) {
+        console.error('[PriceGuard submission]', {
+          stage: caught.stage,
+          message: caught.safe.message,
+          ...(caught.safe.code ? { code: caught.safe.code } : {}),
+          ...(caught.safe.technicalDetails ? { technicalDetails: caught.safe.technicalDetails } : {}),
+        })
+        setError({ ...caught.safe, stage: caught.stage, title: submissionErrorTitle(caught.stage) })
+      } else {
+        const safe = normalizeUnknownError(caught)
+        setError({ ...safe, stage: 'PREPARATION', title: 'Submission preparation failed' })
+      }
     } finally {
+      submissionLock.current = false
       setSubmitting(false)
     }
   }
@@ -52,6 +76,16 @@ export function WriteButton({ action, functionName, args, covenantId, children, 
       onClick={() => void click()}
     >{label}</button>
     {wrongNetwork && <small className="form-error">Writes require Bradbury chain {CHAIN_ID}.</small>}
-    {error && <small className="form-error" role="alert">{error}</small>}
+    {error && <div className="submission-error" role="alert">
+      <strong>{error.title}</strong>
+      <span>Stage: <code>{error.stage}</code> — {SUBMISSION_STAGE_LABELS[error.stage]}</span>
+      <p>{error.message}</p>
+      {error.code && <span>Provider/RPC error code: <code>{error.code}</code></span>}
+      <p>No transaction hash was returned, so nothing was added to Activity.</p>
+      {error.technicalDetails && <details>
+        <summary>Technical details</summary>
+        <p>{error.technicalDetails}</p>
+      </details>}
+    </div>}
   </div>
 }
