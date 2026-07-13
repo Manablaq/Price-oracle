@@ -153,6 +153,13 @@ h3 { margin-bottom: 8px; font-size: 19px; letter-spacing: -.02em; }
 .button.full { width: 100%; }
 .button:disabled { opacity: .38; cursor: not-allowed; }
 .write-control { display: grid; gap: 6px; }
+.submission-error { display: grid; gap: 6px; padding: 12px; border: 1px solid #613535; border-radius: 8px; background: #211315; color: #e8aaaa; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.submission-error strong { color: #f0b4b4; font-size: 13px; }
+.submission-error span, .submission-error p { margin: 0; }
+.submission-error code { color: #ffd0d0; }
+.submission-error details { margin-top: 2px; }
+.submission-error summary { width: fit-content; cursor: pointer; color: #e3b9b9; }
+.submission-error details p { margin-top: 6px; color: #cda6a6; }
 .form-stack, .stack { display: grid; gap: 16px; }
 .network-warning { display: flex; align-items: center; justify-content: space-between; gap: 20px; border-color: #513d28; background: #1d1710; }
 .network-warning p { margin: 4px 0 0; color: #c9b38e; font-size: 12px; }

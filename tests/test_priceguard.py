@@ -41,6 +41,10 @@ def contract():
     return c
 
 class CovenantTests(unittest.TestCase):
+    def setUp(self):
+        GL.message.sender_address = "0x1111111111111111111111111111111111111111"
+        GL.message_raw = {"datetime": "2026-07-13T12:00:00Z"}
+
     def test_fixed_point_and_ids(self):
         self.assertEqual(pg._parse_decimal("62831.71"), 6283171)
         self.assertEqual(pg._id("0xAA", "req-1"), pg._id("0xaa", "req-1"))
@@ -136,6 +140,108 @@ class CovenantTests(unittest.TestCase):
         self.assertEqual(json.loads(c.get_covenant(cid))["status"],"ACTIVE")
         GL.message.sender_address="0x1111111111111111111111111111111111111111"
         with self.assertRaises(AssertionError): c.cancel_unaccepted_covenant(cid)
+
+    def test_successful_cancel_unaccepted_covenant_at_expiry_updates_counters(self):
+        c=contract(); creator=GL.message.sender_address
+        cid=c.create_covenant("cancel_success","BILATERAL","0x2222222222222222222222222222222222222222","BTC/USD","ABOVE","1","",0,1783947600,"HIGH",100,"","","")
+        GL.message_raw={"datetime":"1783947600"}
+        c.cancel_unaccepted_covenant(cid)
+        saved=json.loads(c.get_covenant(cid)); stats=json.loads(c.get_protocol_stats())
+        self.assertEqual(saved["status"],"CANCELED")
+        self.assertEqual(saved["creator"],creator)
+        self.assertEqual((stats["pending_count"],stats["canceled_count"]),("0","1"))
+        self.assertEqual((stats["covenant_count"],stats["bilateral_count"]),("1","1"))
+        pg._assert_counter_invariant(c)
+
+    def test_evaluation_creates_sequenced_attestations_and_transitions_counters(self):
+        c=contract()
+        cid=c.create_covenant("evaluation_sequence","PERSONAL",pg.ZERO_ADDRESS,"BTC/USD","BELOW","70000","",0,1783947600,"HIGH",100,"","","")
+        old=GL.vm.run_nondet_unsafe
+        try:
+            GL.vm.run_nondet_unsafe=lambda leader_fn,validator_fn: leader(obs((7100000,7100100,7100200)))
+            first=c.evaluate_covenant(cid)
+            first_att=json.loads(c.get_attestation(first)); after_first=json.loads(c.get_covenant(cid))
+            self.assertEqual(first,pg._attestation_id(cid,1))
+            self.assertEqual(first_att["outcome"],"NOT_SATISFIED")
+            self.assertEqual(first_att["evaluation_sequence"],1)
+            self.assertEqual((after_first["status"],after_first["evaluation_count"]),("ACTIVE","1"))
+
+            GL.vm.run_nondet_unsafe=lambda leader_fn,validator_fn: leader(obs((6899800,6899900,6900000)))
+            second=c.evaluate_covenant(cid)
+        finally:
+            GL.vm.run_nondet_unsafe=old
+        second_att=json.loads(c.get_attestation(second)); saved=json.loads(c.get_covenant(cid)); stats=json.loads(c.get_protocol_stats())
+        self.assertEqual(second,pg._attestation_id(cid,2))
+        self.assertEqual((second_att["outcome"],second_att["evaluation_sequence"]),("SATISFIED",2))
+        self.assertEqual((saved["status"],saved["evaluation_count"],saved["trigger_attestation_id"]),("TRIGGERED","2",second))
+        self.assertEqual((stats["market_update_count"],stats["attestation_count"]),("2","2"))
+        self.assertEqual((stats["active_count"],stats["triggered_count"]),("0","1"))
+        pg._assert_counter_invariant(c)
+
+    def test_successful_expiry_of_active_and_pending_covenants_updates_counters(self):
+        c=contract()
+        personal=c.create_covenant("expire_active","PERSONAL",pg.ZERO_ADDRESS,"BTC/USD","BELOW","1","",0,1783947600,"HIGH",100,"","","")
+        pending=c.create_covenant("expire_pending","BILATERAL","0x2222222222222222222222222222222222222222","BTC/USD","BELOW","1","",0,1783947600,"HIGH",100,"","","")
+        GL.message_raw={"datetime":"1783947601"}
+        c.expire_covenant(personal); c.expire_covenant(pending)
+        stats=json.loads(c.get_protocol_stats())
+        self.assertEqual(json.loads(c.get_covenant(personal))["status"],"EXPIRED")
+        self.assertEqual(json.loads(c.get_covenant(pending))["status"],"EXPIRED")
+        self.assertEqual((stats["active_count"],stats["pending_count"],stats["expired_count"]),("0","0","2"))
+        pg._assert_counter_invariant(c)
+
+    def test_personal_acknowledgement_closes_triggered_covenant(self):
+        c=contract()
+        cid=c.create_covenant("personal_close","PERSONAL",pg.ZERO_ADDRESS,"BTC/USD","BELOW","70000","",0,1783947600,"HIGH",100,"","","")
+        old=GL.vm.run_nondet_unsafe; GL.vm.run_nondet_unsafe=lambda leader_fn,validator_fn: leader(obs((6899800,6899900,6900000)))
+        try: c.evaluate_covenant(cid)
+        finally: GL.vm.run_nondet_unsafe=old
+        c.acknowledge_outcome(cid)
+        saved=json.loads(c.get_covenant(cid)); stats=json.loads(c.get_protocol_stats())
+        self.assertTrue(saved["creator_acknowledged"])
+        self.assertEqual((saved["status"],saved["closed_at"]),("CLOSED","1783944000"))
+        self.assertEqual((stats["triggered_count"],stats["closed_count"]),("0","1"))
+        pg._assert_counter_invariant(c)
+
+    def test_bilateral_acknowledgements_require_both_parties_to_close(self):
+        c=contract(); creator=GL.message.sender_address; counterparty="0x2222222222222222222222222222222222222222"
+        cid=c.create_covenant("bilateral_close","BILATERAL",counterparty,"BTC/USD","BELOW","70000","",0,1783947600,"HIGH",100,"","","")
+        GL.message.sender_address=counterparty; c.accept_covenant(cid)
+        old=GL.vm.run_nondet_unsafe; GL.vm.run_nondet_unsafe=lambda leader_fn,validator_fn: leader(obs((6899800,6899900,6900000)))
+        try: c.evaluate_covenant(cid)
+        finally: GL.vm.run_nondet_unsafe=old
+        c.acknowledge_outcome(cid)
+        first=json.loads(c.get_covenant(cid)); first_stats=json.loads(c.get_protocol_stats())
+        self.assertEqual(first["status"],"TRIGGERED")
+        self.assertFalse(first["creator_acknowledged"]); self.assertTrue(first["counterparty_acknowledged"])
+        self.assertEqual((first_stats["triggered_count"],first_stats["closed_count"]),("1","0"))
+        GL.message.sender_address=creator; c.acknowledge_outcome(cid)
+        closed=json.loads(c.get_covenant(cid)); stats=json.loads(c.get_protocol_stats())
+        self.assertEqual(closed["status"],"CLOSED")
+        self.assertTrue(closed["creator_acknowledged"]); self.assertTrue(closed["counterparty_acknowledged"])
+        self.assertEqual((stats["triggered_count"],stats["closed_count"]),("0","1"))
+        pg._assert_counter_invariant(c)
+
+    def test_global_retained_attestation_index_rolls_over_at_256(self):
+        c=contract()
+        cid=c.create_covenant("retained_rollover","PERSONAL",pg.ZERO_ADDRESS,"BTC/USD","ABOVE","999999999999","",0,1783947600,"HIGH",100,"","","")
+        old=GL.vm.run_nondet_unsafe; GL.vm.run_nondet_unsafe=lambda leader_fn,validator_fn: leader(obs())
+        try:
+            produced=[c.evaluate_covenant(cid) for _ in range(pg.ATTESTATION_LIMIT+1)]
+        finally:
+            GL.vm.run_nondet_unsafe=old
+        retained=[]
+        for offset in range(0,pg.ATTESTATION_LIMIT,pg.PAGE_LIMIT):
+            retained.extend(item["attestation_id"] for item in json.loads(c.get_attestations(offset,pg.PAGE_LIMIT))["items"])
+        page=json.loads(c.get_attestations(0,pg.PAGE_LIMIT)); saved=json.loads(c.get_covenant(cid))
+        self.assertEqual((page["total"],page["retained"]),(257,256))
+        self.assertEqual(len(retained),256)
+        self.assertEqual(retained[0],produced[-1])
+        self.assertNotIn(produced[0],retained); self.assertIn(produced[1],retained)
+        self.assertTrue(json.loads(c.get_attestation(produced[0]))["found"])
+        self.assertEqual(saved["evaluation_count"],"257")
+        self.assertEqual(c.attestation_index["0"],produced[-1])
+        pg._assert_counter_invariant(c)
     def test_attestation_index_pagination_is_not_hard_coded(self):
         c=contract(); c.attestation_index["0"]="att_x"; c.attestation_count="1"; c.attestations["att_x"]='{"attestation_id":"att_x"}'
         page=json.loads(c.get_attestations(0,10)); self.assertEqual(page["total"],1); self.assertEqual(page["items"][0]["attestation_id"],"att_x")

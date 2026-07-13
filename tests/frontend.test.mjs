@@ -1,5 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import {
   actionAllowed,
@@ -35,11 +37,21 @@ import {
   isProtocolStats,
   parseContractJson,
 } from '../lib/types.ts'
+import {
+  isValidTransactionHash,
+  normalizeUnknownError,
+  SUBMISSION_STAGE_LABELS,
+  SUBMISSION_STAGES,
+  SubmissionStageError,
+  submissionErrorTitle,
+} from '../lib/submission-errors.ts'
+import { checkPostState } from '../lib/post-state.ts'
 
 const addressA = '0x1111111111111111111111111111111111111111'
 const addressB = '0x2222222222222222222222222222222222222222'
 const covenantIdA = `cov_${'a'.repeat(48)}`
 const attestationIdA = `att_${'b'.repeat(48)}`
+const transactionHash = `0x${'1'.repeat(64)}`
 
 const market = () => ({
   found: true,
@@ -135,6 +147,209 @@ const personalArgs = (overrides = {}) => {
     values.spread, values.memo, values.reference, values.revision]
 }
 
+const activity = (overrides = {}) => ({
+  hash: transactionHash,
+  chainId: 4221,
+  contract: addressA,
+  wallet: addressA,
+  action: 'create',
+  functionName: 'create_covenant',
+  phase: 'CONFIRMED',
+  submittedAt: 1,
+  updatedAt: 2,
+  terminal: true,
+  expectedCovenantId: covenantIdA,
+  submittedCreateTerms: {
+    clientRequestId: 'request_1',
+    mode: 'PERSONAL',
+    counterparty: ZERO_ADDRESS,
+    symbol: 'BTC/USD',
+    conditionType: 'BELOW',
+    thresholdLowInput: '70000',
+    thresholdHighInput: '',
+    validFrom: 0,
+    expiry: 1783947600,
+    minimumConfidence: 'HIGH',
+    maximumSpreadBps: 50,
+    memo: '',
+    externalReferenceHash: '',
+    revisionOf: '',
+  },
+  ...overrides,
+})
+
+test('unknown errors preserve safe messages from supported throw shapes', () => {
+  assert.equal(normalizeUnknownError(new Error('Native failure')).message, 'Native failure')
+  assert.equal(normalizeUnknownError('String failure').message, 'String failure')
+  assert.equal(normalizeUnknownError({ message: 'Object failure' }).message, 'Object failure')
+  assert.deepEqual(normalizeUnknownError({ shortMessage: 'Wallet rejected', code: 4001 }), {
+    message: 'Wallet rejected',
+    code: '4001',
+  })
+  assert.equal(normalizeUnknownError({ error: { message: 'Nested RPC failure' } }).message, 'Nested RPC failure')
+  assert.equal(normalizeUnknownError({ cause: { cause: new Error('Root cause') } }).message, 'Root cause')
+})
+
+test('unknown error normalization is circular-safe, bounded, and redacts secrets', () => {
+  const circular = { message: 'Circular failure' }
+  circular.cause = circular
+  assert.equal(normalizeUnknownError(circular).message, 'Circular failure')
+
+  const huge = normalizeUnknownError({ message: 'x'.repeat(20_000) }).message
+  assert.ok(huge.length <= 480)
+  assert.match(huge, /…$/)
+
+  const secret = '0x' + 'a'.repeat(130)
+  const normalized = normalizeUnknownError({
+    message: `Request failed; privateKey=${secret}; signature=${secret}; rawTransaction=${secret}`,
+    privateKey: secret,
+    signature: secret,
+    request: { params: [secret] },
+  })
+  const displayed = JSON.stringify(normalized)
+  assert.doesNotMatch(displayed, new RegExp(secret, 'i'))
+  assert.doesNotMatch(displayed, /"request"|"privateKey"|"signature"/)
+  assert.match(displayed, /\[redacted\]/)
+})
+
+test('submission stages have stable labels and typed stage errors', () => {
+  assert.deepEqual(SUBMISSION_STAGES, [
+    'PREPARATION',
+    'CLIENT_INITIALIZATION',
+    'NETWORK_VERIFICATION',
+    'WALLET_SUBMISSION',
+    'HASH_VALIDATION',
+  ])
+  assert.equal(SUBMISSION_STAGE_LABELS.WALLET_SUBMISSION, 'Wallet submission')
+  assert.equal(submissionErrorTitle('WALLET_SUBMISSION'), 'Wallet submission failed')
+  const cause = { shortMessage: 'User rejected', code: 4001 }
+  const error = new SubmissionStageError('WALLET_SUBMISSION', cause)
+  assert.equal(error.stage, 'WALLET_SUBMISSION')
+  assert.equal(error.safe.code, '4001')
+  assert.equal(error.cause, cause)
+})
+
+test('Activity persistence occurs only after a valid returned transaction hash', async () => {
+  assert.equal(isValidTransactionHash(`0x${'a'.repeat(64)}`), true)
+  for (const invalid of [undefined, null, '', '0x1234', `0x${'g'.repeat(64)}`, { hash: `0x${'a'.repeat(64)}` }]) {
+    assert.equal(isValidTransactionHash(invalid), false)
+  }
+
+  const source = await readFile(new URL('../components/TransactionManager.tsx', import.meta.url), 'utf8')
+  const validation = source.indexOf("runSubmissionStage('HASH_VALIDATION'")
+  const activity = source.indexOf('const activity: Activity', validation)
+  const persistence = source.indexOf('storeActivities(', activity)
+  assert.ok(validation >= 0 && activity > validation && persistence > activity)
+  assert.match(source.slice(validation, activity), /isValidTransactionHash\(returnedHash\)/)
+})
+
+test('submission uses the selected provider without a Snap-dependent client connect', async () => {
+  const source = await readFile(new URL('../components/TransactionManager.tsx', import.meta.url), 'utf8')
+  const submitStart = source.indexOf('const submit = useCallback')
+  const submitEnd = source.indexOf('const injectedProviders', submitStart)
+  const submit = source.slice(submitStart, submitEnd)
+
+  assert.ok(submitStart >= 0 && submitEnd > submitStart)
+  assert.doesNotMatch(submit, /client\.connect\(['"]testnetBradbury['"]\)/)
+  assert.match(source, /createClient\(\{[\s\S]*chain: testnetBradbury,[\s\S]*account: wallet as `0x\$\{string\}`,[\s\S]*provider,[\s\S]*\}\)/)
+  assert.match(submit, /createWriteClient\(submissionContext\.provider, submissionContext\.wallet\)/)
+})
+
+test('submit re-verifies Bradbury and the active account immediately before writing', async () => {
+  const source = await readFile(new URL('../components/TransactionManager.tsx', import.meta.url), 'utf8')
+  const submitStart = source.indexOf('const submit = useCallback')
+  const submitEnd = source.indexOf('const injectedProviders', submitStart)
+  const submit = source.slice(submitStart, submitEnd)
+  const verification = submit.indexOf("runSubmissionStage('NETWORK_VERIFICATION'")
+  const chainCheck = submit.indexOf("method: 'eth_chainId'", verification)
+  const accountCheck = submit.indexOf("method: 'eth_accounts'", chainCheck)
+  const accountMatch = submit.indexOf('activeAccount.toLowerCase() !== submissionContext.wallet.toLowerCase()', accountCheck)
+  const write = submit.indexOf('writeClient.writeContract', accountMatch)
+
+  assert.ok(verification >= 0 && chainCheck > verification && accountCheck > chainCheck && accountMatch > accountCheck && write > accountMatch)
+  assert.match(submit.slice(chainCheck, write), /currentChain !== CHAIN_ID/)
+  assert.match(submit.slice(accountCheck, write), /Reconnect the PriceGuard wallet before submitting/)
+})
+
+test('explicit Bradbury switching uses injected-provider RPC and adds only on code 4902', async () => {
+  const [manager, config] = await Promise.all([
+    readFile(new URL('../components/TransactionManager.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../lib/config.ts', import.meta.url), 'utf8'),
+  ])
+  const switchStart = manager.indexOf('const switchNetwork = useCallback')
+  const switchEnd = manager.indexOf('\n  useEffect(', switchStart)
+  const switchNetwork = manager.slice(switchStart, switchEnd)
+
+  assert.ok(switchStart >= 0 && switchEnd > switchStart)
+  assert.doesNotMatch(switchNetwork, /createWriteClient|client\.connect/)
+  assert.match(switchNetwork, /method: 'wallet_switchEthereumChain'[\s\S]*chainId: BRADBURY_CHAIN_ID_HEX/)
+  assert.match(switchNetwork, /normalizeUnknownError\(error\)\.code !== '4902'\) throw error[\s\S]*method: 'wallet_addEthereumChain'/)
+  assert.equal((switchNetwork.match(/method: 'wallet_addEthereumChain'/g) ?? []).length, 1)
+  assert.equal((switchNetwork.match(/method: 'wallet_switchEthereumChain'/g) ?? []).length, 2)
+
+  assert.match(config, /BRADBURY_CHAIN_ID_HEX = '0x107d'/)
+  assert.match(config, /chainName: 'GenLayer Bradbury'/)
+  assert.match(config, /name: 'GEN',[\s\S]*symbol: 'GEN',[\s\S]*decimals: 18/)
+  assert.match(config, /rpcUrls: \['https:\/\/rpc-bradbury\.genlayer\.com'\]/)
+  assert.match(config, /blockExplorerUrls: \['https:\/\/explorer-bradbury\.genlayer\.com'\]/)
+})
+
+test('project application code contains no MetaMask Snap RPC methods', () => {
+  const root = new URL('..', import.meta.url)
+  const paths = execFileSync('rg', ['--files', 'components', 'lib', 'app'], { cwd: root, encoding: 'utf8' })
+    .trim().split('\n').filter(path => /\.(?:ts|tsx|js|jsx|mjs)$/.test(path))
+  const combined = paths.map(path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8')).join('\n')
+  for (const method of ['wallet_getSnaps', 'wallet_requestSnaps', 'wallet_invokeSnap', 'wallet_snap']) {
+    assert.doesNotMatch(combined, new RegExp(method))
+  }
+})
+
+test('failed covenant submission preserves controlled form values and restores retry controls', async () => {
+  const [form, button] = await Promise.all([
+    readFile(new URL('../components/NewCovenantForm.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../components/WriteButton.tsx', import.meta.url), 'utf8'),
+  ])
+  for (const value of ['request', 'mode', 'counterparty', 'condition', 'low', 'high', 'validFrom', 'expiry', 'spread', 'memo', 'reference', 'revision']) {
+    assert.match(form, new RegExp(`value=\\{${value}\\}`), value)
+  }
+  assert.doesNotMatch(form, /await submit[\s\S]{0,500}set(?:Request|Mode|Counterparty|Condition|Low|High|ValidFrom|Expiry|Spread|Memo|Reference|Revision)/)
+  assert.match(button, /const submissionLock = useRef\(false\)/)
+  assert.match(button, /if \(submissionLock\.current\) return/)
+  assert.match(button, /finally \{[\s\S]*submissionLock\.current = false[\s\S]*setSubmitting\(false\)/)
+  assert.match(button, /disabled=\{disabled \|\| submitting \|\| pending/)
+  assert.doesNotMatch(button, /autoSubmit|resubmit|setTimeout\([^)]*click/)
+})
+
+test('submission error UI is safe, staged, accessible, and explicit about Activity', async () => {
+  const [source, normalizationSource] = await Promise.all([
+    readFile(new URL('../components/WriteButton.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../lib/submission-errors.ts', import.meta.url), 'utf8'),
+  ])
+  const logStart = source.indexOf("console.error('[PriceGuard submission]'")
+  const logEnd = source.indexOf('\n        })', logStart)
+  const logCall = source.slice(logStart, logEnd)
+  assert.ok(logStart >= 0 && logEnd > logStart)
+  assert.match(logCall, /stage: caught\.stage/)
+  assert.match(logCall, /message: caught\.safe\.message/)
+  assert.match(logCall, /caught\.safe\.code/)
+  assert.match(logCall, /caught\.safe\.technicalDetails/)
+  assert.doesNotMatch(logCall, /caught\.cause|\berror\s*:/)
+  assert.doesNotMatch(`${source}\n${normalizationSource}`, /JSON\.stringify\((?:caught|error|cause|caught\.cause)/)
+  assert.match(source, /Stage: <code>\{error\.stage\}<\/code>/)
+  assert.match(source, /Provider\/RPC error code:/)
+  assert.match(source, /No transaction hash was returned, so nothing was added to Activity\./)
+  assert.match(source, /<details>[\s\S]*<summary>Technical details<\/summary>/)
+  assert.match(source, /role="alert"/)
+  assert.doesNotMatch(source, /dangerouslySetInnerHTML/)
+})
+
+test('PriceGuard contract has no working-tree diff', () => {
+  assert.doesNotThrow(() => execFileSync('git', ['diff', '--exit-code', 'HEAD', '--', 'contracts/priceguard.py'], {
+    cwd: new URL('..', import.meta.url),
+    stdio: 'pipe',
+  }))
+})
+
 test('formatFixed renders integer fixed-point values without floating point', () => {
   assert.equal(formatFixed('6283155', 2, { prefix: '$', trim: false }), '$62,831.55')
   assert.equal(formatFixed('10000', 2), '100')
@@ -152,13 +367,66 @@ test('marketState distinguishes missing, stale, breaker, and verified snapshots'
 
 test('transaction classification follows GenLayer finality and execution result', () => {
   assert.deepEqual(classifyTransaction({ statusName: 'ACCEPTED', resultName: 'AGREE', txExecutionResultName: 'FINISHED_WITH_RETURN' }), { phase: 'CONFIRMATION', terminal: false })
+  assert.deepEqual(classifyTransaction({ statusName: 'READY_TO_FINALIZE' }), { phase: 'CONFIRMATION', terminal: false })
   assert.deepEqual(classifyTransaction({ statusName: 'FINALIZED', resultName: 'AGREE', txExecutionResultName: 'FINISHED_WITH_RETURN' }), { phase: 'CONFIRMED', terminal: true })
   assert.deepEqual(classifyTransaction({ statusName: 'FINALIZED', resultName: 'MAJORITY_AGREE', txExecutionResultName: 'FINISHED_WITH_RETURN' }), { phase: 'CONFIRMED', terminal: true })
   assert.deepEqual(classifyTransaction({ statusName: 'FINALIZED', txExecutionResultName: 'FINISHED_WITH_RETURN' }), { phase: 'CONFIRMED', terminal: true })
   assert.equal(classifyTransaction({ statusName: 'FINALIZED', txExecutionResultName: 'FINISHED_WITH_ERROR' }).phase, 'EXECUTION_FAILED')
+  assert.deepEqual(classifyTransaction({ statusName: 'CANCELED' }), { phase: 'CANCELED', terminal: true })
   assert.equal(classifyTransaction({ statusName: 'UNDETERMINED' }).phase, 'UNDETERMINED')
   assert.equal(classifyTransaction({ statusName: 'VALIDATORS_TIMEOUT' }).terminal, true)
+  assert.equal(classifyTransaction({ statusName: 'LEADER_TIMEOUT' }).terminal, true)
   assert.equal(classifyTransaction({ statusName: 'FINALIZED', resultName: 'NO_MAJORITY', txExecutionResultName: 'FINISHED_WITH_RETURN' }).phase, 'UNDETERMINED')
+  assert.equal(classifyTransaction({ statusName: 'FINALIZED', resultName: 'MAJORITY_DISAGREE' }).phase, 'UNDETERMINED')
+  assert.equal(classifyTransaction({ statusName: 'FINALIZED', resultName: 'DISAGREE' }).phase, 'EXECUTION_FAILED')
+  assert.deepEqual(classifyTransaction({ statusName: 'UNKNOWN' }), { phase: 'UNKNOWN_RETRYABLE', terminal: false })
+})
+
+test('checkPostState confirms the exact expected created covenant', async () => {
+  const client = { readContract: async () => ({ found: true, ...covenant() }) }
+  const result = await checkPostState(client, addressA, activity())
+  assert.deepEqual(result, {
+    stateCheck: 'MATCHED',
+    stateCheckMessage: `Created covenant ${covenantIdA} is readable.`,
+  })
+})
+
+test('checkPostState reports missing and malformed covenant responses as mismatched', async () => {
+  const missing = await checkPostState(
+    { readContract: async () => ({ found: false, covenant_id: covenantIdA }) },
+    addressA,
+    activity(),
+  )
+  assert.equal(missing.stateCheck, 'MISMATCHED')
+
+  const malformed = await checkPostState(
+    { readContract: async () => '{"found":true,"unexpected":true}' },
+    addressA,
+    activity(),
+  )
+  assert.equal(malformed.stateCheck, 'MISMATCHED')
+})
+
+test('checkPostState reports unavailable reads without changing finality fields', async () => {
+  const result = await checkPostState(
+    { readContract: async () => { throw new Error('Bradbury read unavailable') } },
+    addressA,
+    activity(),
+  )
+  assert.deepEqual(result, {
+    stateCheck: 'UNAVAILABLE',
+    stateCheckMessage: 'Bradbury read unavailable',
+  })
+  assert.equal(Object.hasOwn(result, 'phase'), false)
+  assert.equal(Object.hasOwn(result, 'terminal'), false)
+})
+
+test('supplementary state reads run only after protocol finality is confirmed', async () => {
+  const source = await readFile(new URL('../components/TransactionManager.tsx', import.meta.url), 'utf8')
+  assert.match(source, /if \(classification\.phase === 'CONFIRMED'\) stateCheckUpdate = await checkPostState/)
+  assert.match(source, /\.\.\.classification,[\s\S]*\.\.\.stateCheckUpdate/)
+  const nonfinal = classifyTransaction({ statusName: 'ACCEPTED', txExecutionResultName: 'FINISHED_WITH_RETURN' })
+  assert.deepEqual(nonfinal, { phase: 'CONFIRMATION', terminal: false })
 })
 
 test('activity namespace and merge isolate accounts and keep the newest record', () => {
@@ -464,6 +732,8 @@ test('wallet errors are normalized and unsupported wallet APIs stay absent', asy
   const combined = sources.join('\n')
   assert.match(combined, /Connection request was declined in your wallet/)
   assert.match(combined, /Network switch was declined in your wallet/)
+  assert.match(combined, /This wallet does not support automatic network switching/)
+  assert.match(combined, /\(code \$\{code\}\)/)
   assert.match(combined, /wallet is no longer available/)
   assert.doesNotMatch(combined, /WalletConnect|wallet_revokePermissions|wallet_requestPermissions|dangerouslySetInnerHTML/)
 })

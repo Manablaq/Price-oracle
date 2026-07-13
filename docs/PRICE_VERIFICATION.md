@@ -35,7 +35,7 @@ No binary floating-point is used for market arithmetic.
 4. Require at least two candidates.
 5. With three candidates, calculate a preliminary median and exclude observations more than 100 bps from it.
 6. Require two accepted observations; compute the integer median, min, max, and `spread_bps = floor(abs(max-min) * 10,000 / min)`.
-7. Fail closed above 100 bps spread or at `LOW` confidence.
+7. Set the circuit breaker above 100 bps spread; a breaker result cannot be stored.
 8. Return canonical JSON containing all raw records, accepted observations, derived fields, symbol, asset class, decimals, and policy version.
 
 Confidence is `HIGH` only with all three venues and spread at most 25 bps; `MEDIUM` requires at least two venues and spread at most 75 bps; otherwise it is `LOW`. A non-breaker LOW snapshot may be stored by a manual market refresh for transparency, but covenant evaluation requires three-source `HIGH` confidence and will reject it.

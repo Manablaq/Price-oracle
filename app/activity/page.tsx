@@ -11,7 +11,7 @@ export default function ActivityPage() {
     <div className="activity-list">
       {activities.map(item => <article className="panel activity-row" key={item.hash}><div>
         <span className="eyebrow">{item.action} · {item.functionName}</span>
-        <a href={`${EXPLORER_URL}/transactions/${item.hash}`} target="_blank" rel="noreferrer">{item.hash}</a>
+        <a href={`${EXPLORER_URL}/tx/${item.hash}`} target="_blank" rel="noreferrer">{item.hash}</a>
         <small>{new Date(item.updatedAt).toLocaleString()} · {item.error || item.stateCheckMessage || 'Waiting for network status'}</small>
         {item.stateCheck && item.stateCheck !== 'NOT_RUN' && <small>Supplementary state read: {item.stateCheck.replaceAll('_', ' ')}</small>}
       </div><StatusBadge state={item.phase} /></article>)}

@@ -2,12 +2,16 @@
   "name": "price-oracle-frontend",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=22.6.0"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --experimental-strip-types --test tests/frontend.test.mjs"
+    "test": "node --experimental-strip-types --test tests/frontend.test.mjs",
+    "docs:check-links": "node scripts/check-markdown-links.mjs"
   },
   "dependencies": {
     "genlayer-js": "1.1.8",

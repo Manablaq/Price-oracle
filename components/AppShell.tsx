@@ -38,17 +38,19 @@ function DisconnectIcon() {
 }
 
 function normalizeWalletError(error: unknown, action: 'connect' | 'switch') {
-  const code = typeof error === 'object' && error !== null && 'code' in error ? Number(error.code) : null
+  const rawCode = typeof error === 'object' && error !== null && 'code' in error ? error.code : null
+  const code = (typeof rawCode === 'string' || typeof rawCode === 'number') && /^[\w.:-]+$/.test(String(rawCode)) ? String(rawCode) : ''
   const message = error instanceof Error ? error.message : ''
-  if (code === 4001 || /reject|declin|denied/i.test(message)) return action === 'connect'
+  const withCode = (safeMessage: string) => action === 'switch' && code ? `${safeMessage} (code ${code})` : safeMessage
+  if (code === '4001' || /reject|declin|denied/i.test(message)) return withCode(action === 'connect'
     ? 'Connection request was declined in your wallet.'
-    : 'Network switch was declined in your wallet.'
-  if (code === -32002 || /already pending|already open/i.test(message)) return 'A wallet request is already open. Complete it in your wallet and try again.'
+    : 'Network switch was declined in your wallet.')
+  if (code === '-32002' || /already pending|already open/i.test(message)) return withCode('A wallet request is already open. Complete it in your wallet and try again.')
   if (/no longer available/i.test(message)) return message
   if (/did not return an account/i.test(message)) return 'The wallet connected without returning an account. Unlock it and try again.'
-  return action === 'connect'
+  return withCode(action === 'connect'
     ? 'PriceGuard could not connect to that wallet. Check the wallet extension and try again.'
-    : 'PriceGuard could not switch this wallet to GenLayer Bradbury. Try again from your wallet.'
+    : message || 'PriceGuard could not switch this wallet to GenLayer Bradbury. Try again from your wallet.')
 }
 
 export function AppShell({ children }: { children: React.ReactNode }) {

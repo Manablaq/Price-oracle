@@ -1,7 +1,7 @@
 'use client'
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
-import { CHAIN_ID, PRICEGUARD_V2_ADDRESS } from '@/lib/config'
+import { BRADBURY_CHAIN_ID_HEX, BRADBURY_NETWORK, CHAIN_ID, PRICEGUARD_V2_ADDRESS } from '@/lib/config'
 import {
   actionAllowed,
   activityNamespace,
@@ -18,6 +18,8 @@ import {
   type Activity,
   type CreateTerms,
 } from '@/lib/types'
+import { checkPostState } from '@/lib/post-state'
+import { isValidTransactionHash, normalizeUnknownError, SubmissionStageError, type SubmissionStage } from '@/lib/submission-errors'
 
 type WriteArg = string | number | bigint | boolean
 
@@ -65,13 +67,36 @@ type ReadClient = {
 }
 
 type WriteClient = ReadClient & {
-  connect: (network: string) => Promise<unknown>
   writeContract: (args: {
     address: `0x${string}`
     functionName: string
     args: WriteArg[]
     value: bigint
-  }) => Promise<`0x${string}`>
+  }) => Promise<unknown>
+}
+
+function networkSwitchError(error: unknown) {
+  const normalized = normalizeUnknownError(error)
+  const code = normalized.code
+  const message = code === '4001'
+    ? 'Network switch was declined in your wallet.'
+    : code === '-32002'
+      ? 'A wallet network request is already open. Complete it in your wallet and try again.'
+      : code === '-32601'
+        ? 'This wallet does not support automatic network switching. Switch to GenLayer Bradbury in the wallet and try again.'
+        : code === 'NETWORK_MISMATCH'
+          ? normalized.message
+          : 'PriceGuard could not switch this wallet to GenLayer Bradbury. Try again from your wallet.'
+  return Object.assign(new Error(message), code ? { code } : {})
+}
+
+async function runSubmissionStage<T>(stage: SubmissionStage, operation: () => Promise<T> | T): Promise<T> {
+  try {
+    return await operation()
+  } catch (error) {
+    if (error instanceof SubmissionStageError) throw error
+    throw new SubmissionStageError(stage, error)
+  }
 }
 
 const Context = createContext<ContextValue>({
@@ -160,43 +185,6 @@ async function prepareSubmission(client: ReadClient, address: `0x${string}`, spe
   }
 
   return { expectedCovenantId, submittedCreateTerms }
-}
-
-async function checkPostState(client: ReadClient, address: `0x${string}`, activity: Activity) {
-  try {
-    if (activity.action === 'refresh') {
-      const result = await readJson(client, address, 'get_market', ['BTC/USD'])
-      if (!isMarketResult(result) || !result.found) return { stateCheck: 'MISMATCHED' as const, stateCheckMessage: 'Execution finalized, but a valid market snapshot could not be read.' }
-      return { stateCheck: 'MATCHED' as const, stateCheckMessage: `Market snapshot sequence ${result.update_sequence} is readable.` }
-    }
-
-    const id = activity.expectedCovenantId ?? activity.covenantId
-    if (!id) return { stateCheck: 'UNAVAILABLE' as const, stateCheckMessage: 'No covenant ID was stored for the supplementary state read.' }
-    const result = await readJson(client, address, 'get_covenant', [id])
-    if (!isCovenantResult(result) || !result.found) return { stateCheck: 'MISMATCHED' as const, stateCheckMessage: 'Execution finalized, but the covenant is not currently readable.' }
-
-    if (activity.action === 'create') {
-      const terms = activity.submittedCreateTerms
-      const matched = Boolean(terms)
-        && result.client_request_id === terms?.clientRequestId
-        && result.creator.toLowerCase() === activity.wallet.toLowerCase()
-      return matched
-        ? { stateCheck: 'MATCHED' as const, stateCheckMessage: `Created covenant ${id} is readable.` }
-        : { stateCheck: 'MISMATCHED' as const, stateCheckMessage: 'The readable covenant does not match the submitted creator/request pair.' }
-    }
-    if (activity.action === 'accept') return { stateCheck: result.accepted_at !== '0' ? 'MATCHED' as const : 'MISMATCHED' as const, stateCheckMessage: `Current status: ${result.status}.` }
-    if (activity.action === 'cancel') return { stateCheck: result.status === 'CANCELED' ? 'MATCHED' as const : 'MISMATCHED' as const, stateCheckMessage: `Current status: ${result.status}.` }
-    if (activity.action === 'expire') return { stateCheck: result.status === 'EXPIRED' ? 'MATCHED' as const : 'MISMATCHED' as const, stateCheckMessage: `Current status: ${result.status}.` }
-    if (activity.action === 'evaluate') return { stateCheck: Number(result.evaluation_count) > 0 ? 'MATCHED' as const : 'MISMATCHED' as const, stateCheckMessage: `Current evaluation count: ${result.evaluation_count}.` }
-    if (activity.action === 'acknowledge') {
-      const me = activity.wallet.toLowerCase()
-      const acknowledged = result.creator.toLowerCase() === me ? result.creator_acknowledged : result.counterparty.toLowerCase() === me && result.counterparty_acknowledged
-      return { stateCheck: acknowledged ? 'MATCHED' as const : 'MISMATCHED' as const, stateCheckMessage: `Current status: ${result.status}.` }
-    }
-    return { stateCheck: 'UNAVAILABLE' as const, stateCheckMessage: 'No supplementary state check is defined.' }
-  } catch (error) {
-    return { stateCheck: 'UNAVAILABLE' as const, stateCheckMessage: error instanceof Error ? error.message : 'Post-finalization state read failed.' }
-  }
 }
 
 export function TransactionManager({ children }: { children: React.ReactNode }) {
@@ -363,12 +351,35 @@ export function TransactionManager({ children }: { children: React.ReactNode }) 
 
   const switchNetwork = useCallback(async () => {
     if (!selectedProvider) throw new Error('No injected wallet was detected.')
-    if (!wallet) await connect()
-    const currentWallet = wallet || String((await selectedProvider.request({ method: 'eth_accounts' }) as string[])[0] ?? '')
-    if (!currentWallet) throw new Error('Connect an injected wallet first.')
-    const client = await createWriteClient(selectedProvider, currentWallet)
-    await client.connect('testnetBradbury')
-    setChainId(normalizeChainId(await selectedProvider.request({ method: 'eth_chainId' })))
+    try {
+      if (!wallet) await connect()
+      const accountsRaw = await selectedProvider.request({ method: 'eth_accounts' })
+      const currentWallet = Array.isArray(accountsRaw) && typeof accountsRaw[0] === 'string' ? accountsRaw[0] : ''
+      if (!currentWallet) throw new Error('Connect an injected wallet first.')
+
+      try {
+        await selectedProvider.request({
+          method: 'wallet_switchEthereumChain',
+          params: [{ chainId: BRADBURY_CHAIN_ID_HEX }],
+        })
+      } catch (error) {
+        if (normalizeUnknownError(error).code !== '4902') throw error
+        await selectedProvider.request({
+          method: 'wallet_addEthereumChain',
+          params: [BRADBURY_NETWORK],
+        })
+        await selectedProvider.request({
+          method: 'wallet_switchEthereumChain',
+          params: [{ chainId: BRADBURY_CHAIN_ID_HEX }],
+        })
+      }
+
+      const nextChainId = normalizeChainId(await selectedProvider.request({ method: 'eth_chainId' }))
+      setChainId(nextChainId)
+      if (nextChainId !== CHAIN_ID) throw Object.assign(new Error('The wallet did not switch to GenLayer Bradbury chain 4221.'), { code: 'NETWORK_MISMATCH' })
+    } catch (error) {
+      throw networkSwitchError(error)
+    }
   }, [connect, selectedProvider, wallet])
 
   useEffect(() => {
@@ -438,29 +449,46 @@ export function TransactionManager({ children }: { children: React.ReactNode }) 
   ), [activities])
 
   const submit = useCallback(async (spec: SubmitSpec) => {
-    if (!PRICEGUARD_V2_ADDRESS) throw new Error('PriceGuard V2 is not deployed or configured.')
-    if (!wallet || !selectedProvider) throw new Error('Connect an injected wallet first.')
-    if (chainId !== CHAIN_ID) throw new Error('Switch to Bradbury (chain 4221) before writing.')
-    if (isPending(spec.action, spec.covenantId)) throw new Error('This action already has an unfinished transaction. It will not be resubmitted.')
+    const submissionContext = await runSubmissionStage('PREPARATION', () => {
+      if (!PRICEGUARD_V2_ADDRESS) throw new Error('PriceGuard V2 is not deployed or configured.')
+      if (!wallet || !selectedProvider) throw new Error('Connect an injected wallet first.')
+      return { address: PRICEGUARD_V2_ADDRESS, provider: selectedProvider, wallet }
+    })
+    await runSubmissionStage('PREPARATION', () => {
+      if (isPending(spec.action, spec.covenantId)) throw new Error('This action already has an unfinished transaction. It will not be resubmitted.')
+    })
 
-    const readClient = await createReadClient()
-    const prepared = await prepareSubmission(readClient, PRICEGUARD_V2_ADDRESS, spec, wallet)
-    const writeClient = await createWriteClient(selectedProvider, wallet)
-    await writeClient.connect('testnetBradbury')
-    const currentChain = normalizeChainId(await selectedProvider.request({ method: 'eth_chainId' }))
-    if (currentChain !== CHAIN_ID) throw new Error('Wallet did not switch to Bradbury chain 4221.')
+    const prepared = await runSubmissionStage('PREPARATION', async () => {
+      const readClient = await createReadClient()
+      return prepareSubmission(readClient, submissionContext.address, spec, submissionContext.wallet)
+    })
+    const writeClient = await runSubmissionStage('CLIENT_INITIALIZATION', () =>
+      createWriteClient(submissionContext.provider, submissionContext.wallet))
+    await runSubmissionStage('NETWORK_VERIFICATION', async () => {
+      const currentChain = normalizeChainId(await submissionContext.provider.request({ method: 'eth_chainId' }))
+      if (currentChain !== CHAIN_ID) throw new Error('The selected wallet is not on GenLayer Bradbury chain 4221. Use the explicit network switch action before submitting.')
+      const accountsRaw = await submissionContext.provider.request({ method: 'eth_accounts' })
+      const activeAccount = Array.isArray(accountsRaw) && typeof accountsRaw[0] === 'string' ? accountsRaw[0] : ''
+      if (!activeAccount || activeAccount.toLowerCase() !== submissionContext.wallet.toLowerCase()) {
+        throw new Error('The selected wallet account changed. Reconnect the PriceGuard wallet before submitting.')
+      }
+    })
 
-    const hash = await writeClient.writeContract({
-      address: PRICEGUARD_V2_ADDRESS,
+    const returnedHash = await runSubmissionStage('WALLET_SUBMISSION', () => writeClient.writeContract({
+      address: submissionContext.address,
       functionName: spec.functionName,
       args: spec.args,
       value: 0n,
+    }))
+    const hash = await runSubmissionStage('HASH_VALIDATION', () => {
+      if (!isValidTransactionHash(returnedHash)) throw new Error('The wallet or SDK did not return a valid transaction hash.')
+      return returnedHash
     })
     const activity: Activity = {
       hash,
       chainId: CHAIN_ID,
-      contract: PRICEGUARD_V2_ADDRESS,
-      wallet,
+      contract: submissionContext.address,
+      wallet: submissionContext.wallet,
       action: spec.action,
       functionName: spec.functionName,
       phase: 'SUBMITTED',
@@ -474,7 +502,7 @@ export function TransactionManager({ children }: { children: React.ReactNode }) 
     }
     storeActivities(current => mergeActivity(current, [activity]) as Activity[])
     return hash
-  }, [chainId, isPending, selectedProvider, storeActivities, wallet])
+  }, [isPending, selectedProvider, storeActivities, wallet])
 
   const injectedProviders = useMemo(() => injectedProviderOptions.map(({ id, name, icon, rdns }) => ({ id, name, icon, rdns })), [injectedProviderOptions])
 
